@@ -1,0 +1,15 @@
+[project]
+name = "memory-sync"
+version = "0.1.0"
+description = "OpenClaw session log scraping and memory backfill tool"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+]
+
+[project.scripts]
+memory-sync = "memory_sync.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

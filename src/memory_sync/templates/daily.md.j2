@@ -1,0 +1,27 @@
+# {{ date }} - Daily Memory
+
+{% if compaction_summary %}
+## Context Summary
+{{ compaction_summary }}
+{% endif %}
+
+{% if key_decisions %}
+## Key Decisions
+{% for decision in key_decisions %}
+- {{ decision }}
+{% endfor %}
+{% endif %}
+
+{% if topics %}
+## Topics Discussed
+{% for topic in topics %}
+- {{ topic }}
+{% endfor %}
+{% endif %}
+
+{% if model_switches %}
+## Model Transitions
+{% for switch in model_switches %}
+- {{ switch.time }}: {{ switch.from }} → {{ switch.to }}
+{% endfor %}
+{% endif %}
