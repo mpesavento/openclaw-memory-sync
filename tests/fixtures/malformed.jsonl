@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"test-session-malformed","timestamp":"2026-01-18T10:00:00.000Z","cwd":"/home/testuser/workspace"}
+{"type":"message","id":"msg001" this is not valid json
+{"type":"message","id":"msg002","parentId":"msg001","timestamp":"2026-01-18T10:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Valid message after malformed line."}],"timestamp":1770249900000}}
+{broken json without closing brace
+{"type":"message","id":"msg003","parentId":"msg002","timestamp":"2026-01-18T10:06:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Response to valid message."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4","usage":{"input":100,"output":50},"stopReason":"stop","timestamp":1770249960000}}

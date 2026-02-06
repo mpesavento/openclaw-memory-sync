@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"test-session-transitions","timestamp":"2026-01-19T08:00:00.000Z","cwd":"/home/testuser/workspace"}
+{"type":"model_change","id":"mc001","parentId":null,"timestamp":"2026-01-19T08:00:00.001Z","provider":"anthropic","modelId":"claude-sonnet-4"}
+{"type":"message","id":"msg001","parentId":"mc001","timestamp":"2026-01-19T08:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Start with Sonnet."}],"timestamp":1770336300000}}
+{"type":"message","id":"msg002","parentId":"msg001","timestamp":"2026-01-19T08:05:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Using Sonnet now."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-sonnet-4","usage":{"input":50,"output":20},"stopReason":"stop","timestamp":1770336330000}}
+{"type":"model_change","id":"mc002","parentId":"msg002","timestamp":"2026-01-19T10:00:00.000Z","provider":"openai","modelId":"gpt-4o"}
+{"type":"message","id":"msg003","parentId":"mc002","timestamp":"2026-01-19T10:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Now switch to GPT."}],"timestamp":1770343500000}}
+{"type":"message","id":"msg004","parentId":"msg003","timestamp":"2026-01-19T10:05:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Switched to GPT-4o."}],"api":"openai-responses","provider":"openai","model":"gpt-4o","usage":{"input":100,"output":30},"stopReason":"stop","timestamp":1770343530000}}
+{"type":"model_change","id":"mc003","parentId":"msg004","timestamp":"2026-01-19T14:00:00.000Z","provider":"anthropic","modelId":"claude-opus-4"}
+{"type":"message","id":"msg005","parentId":"mc003","timestamp":"2026-01-19T14:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Final switch to Opus."}],"timestamp":1770357900000}}
+{"type":"message","id":"msg006","parentId":"msg005","timestamp":"2026-01-19T14:05:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Now using Claude Opus 4."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-4","usage":{"input":150,"output":40},"stopReason":"stop","timestamp":1770357930000}}

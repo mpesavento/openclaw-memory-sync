@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"test-session-small","timestamp":"2026-01-17T08:00:00.000Z","cwd":"/home/testuser/workspace"}
+{"type":"model_change","id":"mc001","parentId":null,"timestamp":"2026-01-17T08:00:00.001Z","provider":"anthropic","modelId":"claude-haiku-4"}
+{"type":"message","id":"msg001","parentId":"mc001","timestamp":"2026-01-17T08:05:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Quick question about Python."}],"timestamp":1770163500000}}
+{"type":"message","id":"msg002","parentId":"msg001","timestamp":"2026-01-17T08:05:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Sure, what's your Python question?"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-haiku-4","usage":{"input":50,"output":20},"stopReason":"stop","timestamp":1770163530000}}
