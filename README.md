@@ -23,7 +23,20 @@ This creates a complete, accurate personal knowledge base from your AI interacti
 
 ## Installation
 
-### With uv (Recommended)
+### As an OpenClaw Skill (Recommended)
+
+```bash
+# Clone to OpenClaw skills directory (rename to match skill name)
+cd ~/.openclaw/skills
+git clone git@github.com:mpesavento/openclaw-memory-sync.git memory-sync
+
+# OpenClaw auto-discovers it. Verify with:
+openclaw skills list | grep memory-sync
+```
+
+Then use via `uv run` from the skill directory, or read the SKILL.md for usage.
+
+### Standalone with uv
 
 ```bash
 # Clone the repo
