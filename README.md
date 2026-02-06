@@ -178,13 +178,44 @@ Show coverage statistics.
 uv run memory-sync stats
 ```
 
+### `summarize`
+
+Generate an LLM summary for a single day (requires ANTHROPIC_API_KEY).
+
+```bash
+uv run memory-sync summarize --date 2026-01-15
+uv run memory-sync summarize --date 2026-01-15 --output summary.md
+```
+
+Options:
+- `--date`: Date to summarize (required)
+- `--model`: Model to use (default: `claude-sonnet-4-20250514`)
+- `--output`: Write to file instead of stdout
+
+### `extract`
+
+Extract conversations matching criteria.
+
+```bash
+uv run memory-sync extract --date 2026-01-15
+uv run memory-sync extract --query "memory sync"
+uv run memory-sync extract --model claude-sonnet-4 --format json
+```
+
+Options:
+- `--date`: Filter by specific date
+- `--query`: Search term in messages (case-insensitive)
+- `--model`: Filter by model used
+- `--format`: Output format (`md`, `json`, `text`; default: `md`)
+
 ### `transitions`
 
 List model transitions with context.
 
 ```bash
 uv run memory-sync transitions
-uv run memory-sync transitions --date 2026-01-15
+uv run memory-sync transitions --since 2026-01-15
+uv run memory-sync transitions --output transitions.json
 ```
 
 ### `validate`
