@@ -23,6 +23,24 @@ This creates a complete, accurate personal knowledge base from your AI interacti
 
 ## Installation
 
+### With uv (Recommended)
+
+```bash
+# Clone the repo
+git clone https://github.com/mpesavento/openclaw-memory-sync.git
+cd openclaw-memory-sync
+
+# Run directly (uv handles dependencies automatically)
+uv run memory-sync compare
+uv run memory-sync backfill --all
+
+# Or install as a global tool
+uv tool install .
+memory-sync compare  # now available globally
+```
+
+### With pip
+
 ```bash
 # Basic installation
 pip install -e .
@@ -41,19 +59,19 @@ pip install -e ".[all]"
 
 ```bash
 # Compare session logs to memory files and find gaps
-memory-sync compare
+uv run memory-sync compare
 
 # Backfill a specific date
-memory-sync backfill 2026-01-15
+uv run memory-sync backfill --date 2026-01-15
 
 # Backfill all missing dates
-memory-sync backfill --all
+uv run memory-sync backfill --all
 
 # Use LLM to generate narrative summaries (requires ANTHROPIC_API_KEY)
-memory-sync backfill --all --summarize
+uv run memory-sync backfill --all --summarize
 
 # Regenerate existing files while preserving hand-written content
-memory-sync backfill --all --preserve --force
+uv run memory-sync backfill --all --preserve --force
 ```
 
 ## Features
@@ -92,8 +110,8 @@ This lets you:
 ## Directory Structure
 
 By default, memory-sync looks for:
-- Session logs: `~/.cursor/OpenClaw/sessions/*.jsonl`
-- Memory files: `~/.cursor/OpenClaw/memory/*.md`
+- **Session logs**: `~/.openclaw/agents/main/sessions/*.jsonl`
+- **Memory files**: `~/.openclaw/workspace/memory/*.md`
 
 Override with `--sessions-dir` and `--memory-dir` options.
 
@@ -104,8 +122,8 @@ Override with `--sessions-dir` and `--memory-dir` options.
 Compare session logs to memory files and report gaps.
 
 ```bash
-memory-sync compare
-memory-sync compare --sessions-dir /path/to/sessions --memory-dir /path/to/memory
+uv run memory-sync compare
+uv run memory-sync compare --sessions-dir /path/to/sessions --memory-dir /path/to/memory
 ```
 
 ### `backfill`
@@ -114,22 +132,22 @@ Generate missing daily memory files.
 
 ```bash
 # Single date
-memory-sync backfill 2026-01-15
+uv run memory-sync backfill --date 2026-01-15
 
 # All missing dates (dry run)
-memory-sync backfill --all --dry-run
+uv run memory-sync backfill --all --dry-run
 
 # All missing dates (simple extraction)
-memory-sync backfill --all
+uv run memory-sync backfill --all
 
 # All missing dates (LLM summarization)
-memory-sync backfill --all --summarize
+uv run memory-sync backfill --all --summarize
 
 # Overwrite existing files
-memory-sync backfill --all --force
+uv run memory-sync backfill --all --force
 
 # Preserve hand-written content when overwriting
-memory-sync backfill --all --preserve --force
+uv run memory-sync backfill --all --preserve --force
 ```
 
 Options:
@@ -138,6 +156,31 @@ Options:
 - `--preserve`: Keep hand-written content from existing files
 - `--summarize`: Use LLM for narrative summaries (requires `anthropic` package)
 - `--model`: Choose LLM model (default: `claude-sonnet-4-20250514`)
+
+### `stats`
+
+Show coverage statistics.
+
+```bash
+uv run memory-sync stats
+```
+
+### `transitions`
+
+List model transitions with context.
+
+```bash
+uv run memory-sync transitions
+uv run memory-sync transitions --date 2026-01-15
+```
+
+### `validate`
+
+Check memory files for consistency issues.
+
+```bash
+uv run memory-sync validate
+```
 
 ## Example Memory File
 
@@ -172,13 +215,13 @@ the backfill logic to support content preservation...
 
 ```bash
 # Install with dev dependencies
-pip install -e ".[dev]"
+uv sync --extra dev
 
 # Run tests
-pytest
+uv run pytest
 
 # Run tests with coverage
-pytest --cov=memory_sync --cov-report=html
+uv run pytest --cov=memory_sync --cov-report=html
 ```
 
 ## Configuration
@@ -188,8 +231,8 @@ Set these environment variables:
 
 ## License
 
-[Add your license here]
+MIT
 
 ## Contributing
 
-[Add contribution guidelines here]
+PRs welcome! Please run tests before submitting.

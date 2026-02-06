@@ -35,14 +35,18 @@ uv run memory-sync backfill --date 2026-02-05 --preserve
 ## Installation
 
 ```bash
-# Basic install
-pip install memory-sync
+# Clone and run with uv (recommended)
+git clone https://github.com/mpesavento/openclaw-memory-sync.git
+cd openclaw-memory-sync
+uv run memory-sync compare
 
-# With LLM summarization support
-pip install 'memory-sync[summarize]'
+# Or install globally
+uv tool install .
+memory-sync compare
 
-# Or using uv
-uv pip install memory-sync
+# Or with pip
+pip install -e .
+pip install -e '.[summarize]'  # for LLM support
 ```
 
 ## Commands Reference
