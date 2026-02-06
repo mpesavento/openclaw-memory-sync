@@ -2,13 +2,49 @@
 
 from pathlib import Path
 from datetime import date
-from typing import Optional
+from typing import Optional, Tuple
 import re
 
 from .models import Message, ModelTransition
 from .parser import get_messages, get_model_transitions, get_compactions
 from .sessions import find_session_files
 from .compare import find_gaps
+
+
+# Markers for identifying auto-generated content
+AUTO_GENERATED_HEADER_PATTERN = r'\*Auto-generated from \d+ session messages\*'
+AUTO_GENERATED_FOOTER = '*Review and edit this draft to capture what\'s actually important.*'
+
+
+def extract_preserved_content(existing_content: str) -> Tuple[str, str]:
+    """
+    Extract hand-written content from an existing memory file.
+
+    Returns:
+        Tuple of (auto_generated_section, hand_written_section)
+
+    Hand-written content is anything after the footer marker.
+    """
+    if not existing_content:
+        return "", ""
+
+    # Find the footer marker
+    footer_pos = existing_content.find(AUTO_GENERATED_FOOTER)
+
+    if footer_pos == -1:
+        # No footer marker - treat entire content as hand-written
+        return "", existing_content
+
+    # Content after footer marker (skip the marker itself)
+    after_footer = existing_content[footer_pos + len(AUTO_GENERATED_FOOTER):]
+
+    # Strip leading whitespace/newlines but preserve the rest
+    hand_written = after_footer.lstrip('\n')
+
+    # Auto-generated is everything up to and including footer
+    auto_generated = existing_content[:footer_pos + len(AUTO_GENERATED_FOOTER)]
+
+    return auto_generated, hand_written
 
 
 def extract_topics(messages: list[Message], max_topics: int = 10) -> list[str]:
@@ -230,7 +266,8 @@ def generate_daily_memory(
     log_date: date,
     sessions_dir: Path,
     output_path: Path,
-    force: bool = False
+    force: bool = False,
+    preserve: bool = False
 ) -> str:
     """
     Generate a daily memory file from session logs.
@@ -240,6 +277,7 @@ def generate_daily_memory(
         sessions_dir: Path to session JSONL files
         output_path: Path to write the memory file
         force: Overwrite existing file if True
+        preserve: Preserve hand-written content from existing file
 
     Returns:
         Path to the created file as string
@@ -247,8 +285,13 @@ def generate_daily_memory(
     Raises:
         FileExistsError: If file exists and force=False
     """
-    if output_path.exists() and not force:
-        raise FileExistsError(f"File already exists: {output_path}. Use --force to overwrite.")
+    # Read existing content for preservation
+    existing_content = ""
+    if output_path.exists():
+        if not force and not preserve:
+            raise FileExistsError(f"File already exists: {output_path}. Use --force to overwrite.")
+        if preserve:
+            existing_content = output_path.read_text()
 
     # Collect data for this date
     messages: list[Message] = []
@@ -295,6 +338,12 @@ def generate_daily_memory(
         'compaction_summary': compaction_summary,
     })
 
+    # Preserve hand-written content if requested
+    if preserve and existing_content:
+        _, hand_written = extract_preserved_content(existing_content)
+        if hand_written:
+            content = content + "\n\n" + hand_written
+
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -308,7 +357,8 @@ def backfill_all_missing(
     sessions_dir: Path,
     memory_dir: Path,
     dry_run: bool = False,
-    force: bool = False
+    force: bool = False,
+    preserve: bool = False
 ) -> dict:
     """
     Backfill all missing daily memory files.
@@ -333,7 +383,7 @@ def backfill_all_missing(
             continue
 
         try:
-            path = generate_daily_memory(gap.date, sessions_dir, output_path, force=force)
+            path = generate_daily_memory(gap.date, sessions_dir, output_path, force=force, preserve=preserve)
             created.append(path)
         except FileExistsError:
             skipped.append(gap.date)
@@ -350,7 +400,7 @@ def backfill_all_missing(
                 continue
 
             try:
-                path = generate_daily_memory(gap.date, sessions_dir, output_path, force=True)
+                path = generate_daily_memory(gap.date, sessions_dir, output_path, force=True, preserve=preserve)
                 created.append(path)
             except Exception as e:
                 errors.append((gap.date, str(e)))

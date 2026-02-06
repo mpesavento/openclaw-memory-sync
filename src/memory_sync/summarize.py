@@ -161,7 +161,8 @@ def summarize_with_anthropic(
     messages: list[Message],
     transitions: list[ModelTransition],
     api_key: Optional[str] = None,
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4-20250514",
+    existing_content: Optional[str] = None
 ) -> str:
     """
     Summarize a day's conversation using the Anthropic API.
@@ -172,6 +173,7 @@ def summarize_with_anthropic(
         transitions: Model transitions from that day
         api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
         model: Model to use for summarization
+        existing_content: Optional existing memory file content to incorporate
 
     Returns:
         Generated summary text
@@ -206,6 +208,19 @@ def summarize_with_anthropic(
         conversation=conversation
     )
 
+    # Include existing content if provided
+    if existing_content:
+        prompt += f"""
+
+---
+
+EXISTING MEMORY FILE (incorporate important hand-written content):
+{existing_content}
+
+IMPORTANT: The above is an existing memory file for this date. Please incorporate any important
+hand-written notes, insights, or context that isn't captured in the new conversation data.
+Merge the existing content's key points into your new summary rather than losing them."""
+
     # Call API
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -226,6 +241,7 @@ def generate_summarized_memory(
     sessions_dir: Path,
     output_path: Path,
     force: bool = False,
+    preserve: bool = False,
     api_key: Optional[str] = None,
     model: str = "claude-sonnet-4-20250514"
 ) -> str:
@@ -237,14 +253,20 @@ def generate_summarized_memory(
         sessions_dir: Path to session JSONL files
         output_path: Path to write the memory file
         force: Overwrite existing file if True
+        preserve: Pass existing content to LLM to incorporate
         api_key: Anthropic API key
         model: Model to use for summarization
 
     Returns:
         Path to the created file as string
     """
-    if output_path.exists() and not force:
-        raise FileExistsError(f"File already exists: {output_path}. Use --force to overwrite.")
+    # Read existing content for preservation
+    existing_content = None
+    if output_path.exists():
+        if not force and not preserve:
+            raise FileExistsError(f"File already exists: {output_path}. Use --force to overwrite.")
+        if preserve:
+            existing_content = output_path.read_text()
 
     # Collect data for this date
     messages: list[Message] = []
@@ -271,7 +293,8 @@ def generate_summarized_memory(
         messages=messages,
         transitions=transitions,
         api_key=api_key,
-        model=model
+        model=model,
+        existing_content=existing_content
     )
 
     # Ensure parent directory exists

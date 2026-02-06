@@ -65,15 +65,18 @@ def compare(sessions_dir, memory_dir):
 @click.option("--all", "backfill_all", is_flag=True, help="Backfill all missing dates")
 @click.option("--dry-run", is_flag=True, help="Show what would be created")
 @click.option("--force", is_flag=True, help="Overwrite existing files")
+@click.option("--preserve", is_flag=True, help="Preserve hand-written content from existing files")
 @click.option("--summarize", is_flag=True, help="Use LLM to generate narrative summaries (requires anthropic)")
 @click.option("--model", default="claude-sonnet-4-20250514", help="Model to use for summarization")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
-def backfill(target_date, backfill_all, dry_run, force, summarize, model, sessions_dir, memory_dir):
+def backfill(target_date, backfill_all, dry_run, force, preserve, summarize, model, sessions_dir, memory_dir):
     """Generate missing daily memory files from JSONL logs.
 
     By default, uses simple extraction. With --summarize, uses an LLM to
     generate narrative summaries (requires ANTHROPIC_API_KEY env var).
+
+    Use --preserve to keep hand-written content when regenerating existing files.
     """
     from .backfill import generate_daily_memory, backfill_all_missing
 
@@ -96,12 +99,15 @@ def backfill(target_date, backfill_all, dry_run, force, summarize, model, sessio
             click.echo("Install with: pip install 'memory-sync[summarize]'", err=True)
             sys.exit(1)
 
-        def generate_fn(log_date, sessions_dir, output_path, force):
+        def generate_fn(log_date, sessions_dir, output_path, force, preserve=False):
             return generate_summarized_memory(
-                log_date, sessions_dir, output_path, force=force, model=model
+                log_date, sessions_dir, output_path, force=force, preserve=preserve, model=model
             )
     else:
-        generate_fn = generate_daily_memory
+        def generate_fn(log_date, sessions_dir, output_path, force, preserve=False):
+            return generate_daily_memory(
+                log_date, sessions_dir, output_path, force=force, preserve=preserve
+            )
 
     if target_date:
         # Backfill single date
@@ -112,11 +118,11 @@ def backfill(target_date, backfill_all, dry_run, force, summarize, model, sessio
             click.echo(f"Would create: {output_path}")
         else:
             try:
-                path = generate_fn(log_date, sessions_path, output_path, force=force)
+                path = generate_fn(log_date, sessions_path, output_path, force=force, preserve=preserve)
                 click.echo(f"Created: {path}")
             except FileExistsError as e:
                 click.echo(f"Error: {e}", err=True)
-                click.echo("Use --force to overwrite.", err=True)
+                click.echo("Use --force or --preserve to overwrite.", err=True)
                 sys.exit(1)
             except ValueError as e:
                 click.echo(f"Error: {e}", err=True)
@@ -143,7 +149,7 @@ def backfill(target_date, backfill_all, dry_run, force, summarize, model, sessio
                     output_path = memory_path / f"{gap.date}.md"
                     click.echo(f"Summarizing {gap.date}...", nl=False)
                     try:
-                        path = generate_fn(gap.date, sessions_path, output_path, force=True)
+                        path = generate_fn(gap.date, sessions_path, output_path, force=True, preserve=preserve)
                         created.append(path)
                         click.echo(" done")
                     except Exception as e:
@@ -157,7 +163,7 @@ def backfill(target_date, backfill_all, dry_run, force, summarize, model, sessio
                 if not created and not errors:
                     click.echo("No missing files to backfill.")
         else:
-            result = backfill_all_missing(sessions_path, memory_path, dry_run=dry_run, force=force)
+            result = backfill_all_missing(sessions_path, memory_path, dry_run=dry_run, force=force, preserve=preserve)
 
             if dry_run:
                 click.echo("Dry run - no files created")

@@ -11,6 +11,8 @@ from memory_sync.backfill import (
     extract_decisions,
     format_transitions,
     render_daily_template,
+    extract_preserved_content,
+    AUTO_GENERATED_FOOTER,
 )
 from memory_sync.parser import get_messages
 from memory_sync.models import ModelTransition
@@ -262,3 +264,157 @@ class TestRenderDailyTemplate:
 
         assert 'Model Transitions' in content
         assert '14:00' in content
+
+
+class TestExtractPreservedContent:
+    """Tests for extract_preserved_content function."""
+
+    def test_no_content(self):
+        """Empty string returns empty tuples."""
+        auto, hand = extract_preserved_content("")
+        assert auto == ""
+        assert hand == ""
+
+    def test_no_footer_marker(self):
+        """Content without footer marker is treated as hand-written."""
+        content = "# My Notes\n\nHand-written content here."
+        auto, hand = extract_preserved_content(content)
+        assert auto == ""
+        assert hand == content
+
+    def test_with_footer_marker(self):
+        """Content after footer marker is preserved."""
+        content = f"""# 2026-01-15 (Wednesday)
+
+*Auto-generated from 10 session messages*
+
+## Topics
+- Python
+- Testing
+
+---
+
+{AUTO_GENERATED_FOOTER}
+
+## My Hand-written Section
+
+This is my custom content that should be preserved.
+"""
+        auto, hand = extract_preserved_content(content)
+
+        assert AUTO_GENERATED_FOOTER in auto
+        assert "Auto-generated from 10 session messages" in auto
+        assert "My Hand-written Section" in hand
+        assert "custom content" in hand
+
+    def test_footer_at_end(self):
+        """Footer at end with no additional content."""
+        content = f"""# 2026-01-15
+
+Auto-generated content.
+
+---
+
+{AUTO_GENERATED_FOOTER}"""
+        auto, hand = extract_preserved_content(content)
+
+        assert AUTO_GENERATED_FOOTER in auto
+        assert hand == ""
+
+
+class TestContentPreservation:
+    """Tests for --preserve functionality in generate_daily_memory."""
+
+    def test_preserve_keeps_handwritten(self, temp_sessions_dir, temp_memory_dir):
+        """Preserve flag keeps hand-written content."""
+        output_path = temp_memory_dir / '2026-01-15.md'
+
+        # Create existing file with hand-written content
+        existing_content = f"""# 2026-01-15 (Wednesday)
+
+*Auto-generated from 5 session messages*
+
+## Old Topics
+- Old topic
+
+---
+
+{AUTO_GENERATED_FOOTER}
+
+## My Custom Section
+
+This is hand-written content that must be preserved!
+Important notes about the day.
+"""
+        output_path.write_text(existing_content)
+
+        # Regenerate with preserve
+        generate_daily_memory(
+            date(2026, 1, 15),
+            temp_sessions_dir,
+            output_path,
+            force=True,
+            preserve=True
+        )
+
+        new_content = output_path.read_text()
+
+        # New auto-generated content should be present
+        assert "Auto-generated" in new_content
+        assert "2026-01-15" in new_content
+
+        # Hand-written content should be preserved
+        assert "My Custom Section" in new_content
+        assert "hand-written content that must be preserved" in new_content
+        assert "Important notes about the day" in new_content
+
+    def test_preserve_without_existing_handwritten(self, temp_sessions_dir, temp_memory_dir):
+        """Preserve with no hand-written content just regenerates."""
+        output_path = temp_memory_dir / '2026-01-15.md'
+
+        # Create existing file with only auto-generated content
+        existing_content = f"""# 2026-01-15 (Wednesday)
+
+*Auto-generated from 5 session messages*
+
+## Old Topics
+- Old topic
+
+---
+
+{AUTO_GENERATED_FOOTER}"""
+        output_path.write_text(existing_content)
+
+        # Regenerate with preserve
+        generate_daily_memory(
+            date(2026, 1, 15),
+            temp_sessions_dir,
+            output_path,
+            force=True,
+            preserve=True
+        )
+
+        new_content = output_path.read_text()
+
+        # Should have new content
+        assert "Auto-generated" in new_content
+        # Should NOT have old content lingering
+        assert "Old Topics" not in new_content or "Topics Covered" in new_content
+
+    def test_preserve_allows_overwrite(self, temp_sessions_dir, temp_memory_dir):
+        """Preserve flag allows overwriting without force."""
+        output_path = temp_memory_dir / '2026-01-15.md'
+        output_path.write_text("Existing content")
+
+        # Should NOT raise FileExistsError
+        generate_daily_memory(
+            date(2026, 1, 15),
+            temp_sessions_dir,
+            output_path,
+            force=False,
+            preserve=True
+        )
+
+        assert output_path.exists()
+        content = output_path.read_text()
+        assert "2026-01-15" in content
