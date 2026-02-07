@@ -24,7 +24,8 @@ def parse_jsonl(path: Path) -> Iterator[dict]:
             try:
                 yield json.loads(line)
             except json.JSONDecodeError as e:
-                print(f"Warning: Skipping malformed JSON at {path}:{line_num}: {e}", file=sys.stderr)
+                # Only log error type and location, not the content (which might contain secrets)
+                print(f"Warning: Skipping malformed JSON at {path}:{line_num} ({type(e).__name__})", file=sys.stderr)
 
 
 def get_session_metadata(path: Path) -> Optional[dict]:

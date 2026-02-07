@@ -140,7 +140,7 @@ class TestTransitionsCommand:
         """Filter transitions by since date."""
         result = runner.invoke(main, [
             'transitions',
-            '--since', '2026-01-18',
+            '--date', '2026-01-18',
             '--sessions-dir', str(temp_sessions_dir),
         ])
 

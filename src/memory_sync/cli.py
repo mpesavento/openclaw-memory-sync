@@ -7,6 +7,8 @@ import json
 
 import click
 
+from .sanitize import sanitize_content
+
 
 # Default paths for OpenClaw
 def get_default_sessions_dir() -> Path:
@@ -234,14 +236,14 @@ def extract(target_date, query, model, output_format, sessions_dir):
     click.echo(f"Found {len(messages)} matching messages")
     click.echo("")
 
-    # Format output
+    # Format output (with sanitization)
     if output_format == 'json':
         data = [
             {
                 'id': m.id,
                 'timestamp': m.timestamp.isoformat(),
                 'role': m.role,
-                'text': m.text_content[:500],  # Truncate for readability
+                'text': sanitize_content(m.text_content),  # Sanitize full content
                 'model': m.model,
                 'provider': m.provider,
             }
@@ -253,7 +255,7 @@ def extract(target_date, query, model, output_format, sessions_dir):
         for msg in messages:
             time_str = msg.timestamp.strftime('%Y-%m-%d %H:%M')
             role = msg.role.upper()
-            text = msg.text_content[:200] + ('...' if len(msg.text_content) > 200 else '')
+            text = sanitize_content(msg.text_content)  # Sanitize full content
             click.echo(f"[{time_str}] {role}: {text}")
             click.echo("")
 
@@ -264,7 +266,7 @@ def extract(target_date, query, model, output_format, sessions_dir):
             model_str = f" ({msg.model})" if msg.model else ""
             click.echo(f"### [{time_str}] {role}{model_str}")
             click.echo("")
-            text = msg.text_content[:500] + ('...' if len(msg.text_content) > 500 else '')
+            text = sanitize_content(msg.text_content)  # Sanitize full content
             click.echo(text)
             click.echo("")
 
