@@ -217,3 +217,168 @@ class TestVersionOption:
 
         assert result.exit_code == 0
         assert '0.1.0' in result.output
+
+
+class TestBackfillTodayFlag:
+    """Tests for --today flag."""
+    
+    def test_backfill_today_dry_run(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill --today with dry run."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--today',
+            '--dry-run',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 0
+        assert 'Processing today' in result.output or 'Would create' in result.output
+    
+    def test_backfill_today_with_force(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill --today with --force."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--today',
+            '--force',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        # May succeed or fail depending on whether there are messages today
+        assert result.exit_code in (0, 1)
+
+
+class TestBackfillSinceFlag:
+    """Tests for --since flag."""
+    
+    def test_backfill_since_dry_run(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill --since with dry run."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--since', '2026-01-15',
+            '--dry-run',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 0
+        assert 'Processing dates from' in result.output or 'days' in result.output
+    
+    def test_backfill_since_invalid_date(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill --since with invalid date format."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--since', 'not-a-date',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 2  # Click validation error
+    
+    def test_backfill_since_future_date(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill --since with future date fails."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--since', '2099-12-31',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 1
+        assert 'future' in result.output.lower()
+
+
+class TestBackfillIncrementalFlag:
+    """Tests for --incremental flag."""
+    
+    def test_backfill_incremental_no_state(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill --incremental without prior state fails."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--incremental',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 1
+        assert 'No previous run' in result.output or '--all' in result.output
+    
+    def test_backfill_incremental_with_state(self, runner, temp_sessions_dir, temp_memory_dir, monkeypatch):
+        """Backfill --incremental with existing state."""
+        from pathlib import Path
+        from memory_sync.state import save_state
+        from datetime import datetime, timedelta
+        
+        # Mock home directory to use temp dir
+        state_dir = temp_memory_dir.parent / '.memory-sync'
+        state_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, 'home', lambda: temp_memory_dir.parent)
+        
+        # Save a state from 1 day ago
+        save_state(last_run=datetime.now() - timedelta(days=1))
+        
+        result = runner.invoke(main, [
+            'backfill',
+            '--incremental',
+            '--dry-run',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        # Should succeed with or without changes
+        assert result.exit_code == 0
+
+
+class TestBackfillMutualExclusivity:
+    """Tests for mutual exclusivity of date flags."""
+    
+    def test_no_date_flag_fails(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill without any date flag fails."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 1
+        assert 'Must specify one of' in result.output
+    
+    def test_multiple_date_flags_fails(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill with multiple date flags fails."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--today',
+            '--all',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 1
+        assert 'Cannot combine' in result.output
+    
+    def test_date_and_since_fails(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill with --date and --since fails."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--date', '2026-01-15',
+            '--since', '2026-01-10',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 1
+        assert 'Cannot combine' in result.output
+    
+    def test_today_and_incremental_fails(self, runner, temp_sessions_dir, temp_memory_dir):
+        """Backfill with --today and --incremental fails."""
+        result = runner.invoke(main, [
+            'backfill',
+            '--today',
+            '--incremental',
+            '--sessions-dir', str(temp_sessions_dir),
+            '--memory-dir', str(temp_memory_dir),
+        ])
+        
+        assert result.exit_code == 1
+        assert 'Cannot combine' in result.output

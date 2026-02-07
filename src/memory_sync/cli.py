@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import json
 
 import click
@@ -65,6 +65,9 @@ def compare(sessions_dir, memory_dir):
 @main.command()
 @click.option("--date", "target_date", default=None, help="Specific date to backfill (YYYY-MM-DD)")
 @click.option("--all", "backfill_all", is_flag=True, help="Backfill all missing dates")
+@click.option("--today", "today", is_flag=True, help="Backfill only today's date (local timezone)")
+@click.option("--since", "since_date", default=None, help="Backfill from date to present (YYYY-MM-DD)")
+@click.option("--incremental", "incremental", is_flag=True, help="Backfill only dates changed since last run")
 @click.option("--dry-run", is_flag=True, help="Show what would be created")
 @click.option("--force", is_flag=True, help="Overwrite existing files")
 @click.option("--preserve", is_flag=True, help="Preserve hand-written content from existing files")
@@ -72,15 +75,36 @@ def compare(sessions_dir, memory_dir):
 @click.option("--model", default="claude-sonnet-4-20250514", help="Model to use for summarization")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
-def backfill(target_date, backfill_all, dry_run, force, preserve, summarize, model, sessions_dir, memory_dir):
+def backfill(target_date, backfill_all, today, since_date, incremental, dry_run, force, preserve, summarize, model, sessions_dir, memory_dir):
     """Generate missing daily memory files from JSONL logs.
 
     By default, uses simple extraction. With --summarize, uses an LLM to
     generate narrative summaries (requires ANTHROPIC_API_KEY env var).
 
     Use --preserve to keep hand-written content when regenerating existing files.
+    
+    Date selection options (mutually exclusive):
+    - --date YYYY-MM-DD: Single specific date
+    - --today: Current date only (for nightly automation)
+    - --since YYYY-MM-DD: From date to present (for catch-up)
+    - --all: All missing dates (for initial setup)
+    - --incremental: Since last run (smart automation)
     """
     from .backfill import generate_daily_memory, backfill_all_missing
+    from .state import load_state, save_state, get_changed_days, get_last_run_datetime
+
+    # Validate mutual exclusivity of date selection flags
+    date_flags = [target_date, backfill_all, today, since_date, incremental]
+    date_flags_count = sum(1 for flag in date_flags if flag)
+    
+    if date_flags_count == 0:
+        click.echo("Error: Must specify one of: --date, --today, --since, --all, or --incremental", err=True)
+        sys.exit(1)
+    
+    if date_flags_count > 1:
+        click.echo("Error: Cannot combine --date, --today, --since, --all, and --incremental", err=True)
+        click.echo("Choose exactly one date selection option.", err=True)
+        sys.exit(1)
 
     sessions_path = Path(sessions_dir) if sessions_dir else get_default_sessions_dir()
     memory_path = Path(memory_dir) if memory_dir else get_default_memory_dir()
@@ -111,25 +135,109 @@ def backfill(target_date, backfill_all, dry_run, force, preserve, summarize, mod
                 log_date, sessions_dir, output_path, force=force, preserve=preserve
             )
 
+    # Determine which dates to process
+    dates_to_process = []
+    
     if target_date:
         # Backfill single date
         log_date = parse_date(target_date)
-        output_path = memory_path / f"{log_date}.md"
-
-        if dry_run:
-            click.echo(f"Would create: {output_path}")
+        dates_to_process = [log_date]
+        
+    elif today:
+        # Backfill today only
+        log_date = datetime.now().date()
+        dates_to_process = [log_date]
+        click.echo(f"Processing today: {log_date}")
+        
+    elif since_date:
+        # Backfill from specified date to today
+        from_date = parse_date(since_date)
+        to_date = datetime.now().date()
+        
+        if from_date > to_date:
+            click.echo(f"Error: --since date {from_date} is in the future", err=True)
+            sys.exit(1)
+        
+        # Generate date range
+        current = from_date
+        while current <= to_date:
+            dates_to_process.append(current)
+            current += timedelta(days=1)
+        
+        click.echo(f"Processing dates from {from_date} to {to_date} ({len(dates_to_process)} days)")
+        
+    elif incremental:
+        # Backfill only dates changed since last run
+        last_run = get_last_run_datetime()
+        
+        if last_run is None:
+            click.echo("No previous run found. Use --all for initial backfill.", err=True)
+            sys.exit(1)
+        
+        changed_dates = get_changed_days(sessions_path, last_run)
+        dates_to_process = sorted(changed_dates)
+        
+        if dates_to_process:
+            click.echo(f"Found {len(dates_to_process)} days with changes since {last_run.strftime('%Y-%m-%d %H:%M')}")
         else:
-            try:
-                path = generate_fn(log_date, sessions_path, output_path, force=force, preserve=preserve)
-                click.echo(f"Created: {path}")
-            except FileExistsError as e:
-                click.echo(f"Error: {e}", err=True)
-                click.echo("Use --force or --preserve to overwrite.", err=True)
-                sys.exit(1)
-            except ValueError as e:
-                click.echo(f"Error: {e}", err=True)
-                sys.exit(1)
-
+            click.echo(f"No changes since last run at {last_run.strftime('%Y-%m-%d %H:%M')}")
+    
+    # Process specific dates
+    if dates_to_process and not backfill_all:
+        created = []
+        skipped = []
+        errors = []
+        
+        for log_date in dates_to_process:
+            output_path = memory_path / f"{log_date}.md"
+            
+            if dry_run:
+                click.echo(f"Would create: {output_path}")
+                created.append(str(output_path))
+            else:
+                try:
+                    path = generate_fn(log_date, sessions_path, output_path, force=force, preserve=preserve)
+                    created.append(path)
+                    click.echo(f"Created: {path}")
+                except FileExistsError:
+                    skipped.append(log_date)
+                    if len(dates_to_process) > 1:
+                        click.echo(f"Skipped: {output_path} (already exists)")
+                    else:
+                        click.echo(f"Error: File already exists: {output_path}", err=True)
+                        click.echo("Use --force or --preserve to overwrite.", err=True)
+                        sys.exit(1)
+                except ValueError as e:
+                    errors.append((log_date, str(e)))
+                    if len(dates_to_process) > 1:
+                        click.echo(f"Error for {log_date}: {e}", err=True)
+                    else:
+                        click.echo(f"Error: {e}", err=True)
+                        sys.exit(1)
+        
+        # Summary for multi-date operations
+        if len(dates_to_process) > 1:
+            click.echo("")
+            if created:
+                action = "Would create" if dry_run else "Created"
+                click.echo(f"{action} {len(created)} files")
+            if skipped:
+                click.echo(f"Skipped {len(skipped)} existing files (use --force to overwrite)")
+            if errors:
+                click.echo(f"Errors: {len(errors)}", err=True)
+        
+        # Update state for incremental mode
+        if incremental and created and not dry_run:
+            state = load_state()
+            total = state.get('total_days_processed', 0) + len(created)
+            last_date = max(dates_to_process) if dates_to_process else None
+            save_state(
+                last_run=datetime.now(),
+                last_successful_date=last_date,
+                total_days_processed=total
+            )
+            click.echo(f"Updated state: {total} total days processed")
+    
     elif backfill_all:
         # Backfill all missing
         if summarize:
@@ -187,10 +295,6 @@ def backfill(target_date, backfill_all, dry_run, force, preserve, summarize, mod
 
             if not result['created'] and not result['errors']:
                 click.echo("No missing files to backfill.")
-
-    else:
-        click.echo("Error: Specify --date YYYY-MM-DD or --all", err=True)
-        sys.exit(1)
 
 
 @main.command()

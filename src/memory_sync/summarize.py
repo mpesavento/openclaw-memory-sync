@@ -234,9 +234,36 @@ def summarize_with_anthropic(
 EXISTING MEMORY FILE (incorporate important hand-written content):
 {existing_content}
 
-IMPORTANT: The above is an existing memory file for this date. Please incorporate any important
-hand-written notes, insights, or context that isn't captured in the new conversation data.
-Merge the existing content's key points into your new summary rather than losing them."""
+---
+
+INCORPORATION GUIDELINES:
+
+You are AUGMENTING an existing memory file, not replacing it. The above content is your baseline.
+
+1. **Preserve temporal order**: Keep events in chronological sequence. If the existing
+   file has morning/afternoon sections or timestamps, maintain that structure.
+
+2. **Respect the existing style**: If the file uses narrative prose, continue that style.
+   If it uses bullet lists, match that format. Mirror the organizational approach already
+   established in the file.
+
+3. **Merge by theme**: When existing content covers the same topic as new conversation data,
+   combine them into a unified section rather than creating duplicate sections. Weave the
+   new information into the existing narrative.
+
+4. **Preserve hand-written insights**: Any reflections, personal notes, or contextual details
+   that aren't in the raw conversation data MUST be retained - these are valuable additions
+   that should not be lost.
+
+5. **Update, don't replace**: Think of this as adding to and enriching the existing memory,
+   not starting from scratch. The existing content has priority; new data supplements it.
+
+6. **Maintain section headers**: If the existing file has specific section names
+   (e.g., "## Morning Standup", "## Backend Refactor"), keep those headers and add
+   related new content under them rather than creating new sections.
+
+Your goal: Create a cohesive memory file that feels like a natural evolution of the existing
+content, incorporating new information seamlessly while preserving everything important."""
 
     # Call API
     client = anthropic.Anthropic(api_key=api_key)
