@@ -74,17 +74,23 @@ pip install -e ".[all]"
 # Compare session logs to memory files and find gaps
 uv run memory-sync compare
 
+# Nightly automation - backfill today only (fast: 30-60 seconds)
+uv run memory-sync backfill --today --summarize
+
 # Backfill a specific date
 uv run memory-sync backfill --date 2026-01-15
 
-# Backfill all missing dates
-uv run memory-sync backfill --all
+# Catch-up after a gap - backfill from a date to present
+uv run memory-sync backfill --since 2026-01-28 --summarize
 
-# Use LLM to generate narrative summaries (requires ANTHROPIC_API_KEY)
+# Smart automation - only process dates changed since last run
+uv run memory-sync backfill --incremental --summarize
+
+# Initial setup - backfill all missing dates
 uv run memory-sync backfill --all --summarize
 
-# Regenerate existing files while preserving hand-written content
-uv run memory-sync backfill --all --preserve --force
+# Regenerate existing file while preserving hand-written notes
+uv run memory-sync backfill --date 2026-01-15 --force --preserve --summarize
 ```
 
 ## Features
@@ -123,16 +129,54 @@ Uses Claude to generate:
 - Context-aware topic grouping
 - Intelligent insights extraction
 
-Requires `ANTHROPIC_API_KEY` environment variable.
+**Requires `ANTHROPIC_API_KEY` environment variable:**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+```
 
 **Security**: All conversations are sanitized before being sent to the LLM, and outputs are validated.
+
+### Incremental Backfill Strategies ⭐
+
+**Problem**: Running `--all --summarize` on historical data takes 5-10 minutes per day. For nightly automation, this is inefficient.
+
+**Solution**: Use incremental backfill modes to only process new or changed data:
+
+#### `--today` (Recommended for Nightly Automation)
+Process only the current day. **Fast** (~30-60 seconds) and perfect for cron jobs:
+```bash
+0 3 * * * cd ~/.openclaw/skills/memory-sync && uv run memory-sync backfill --today --summarize
+```
+
+#### `--since YYYY-MM-DD` (Manual Catch-Up)
+Backfill from a specific date to present. Use after gaps or model switches:
+```bash
+# Backfill last week
+uv run memory-sync backfill --since 2026-01-28 --summarize
+```
+
+#### `--incremental` (Smart Automation)
+Tracks last successful run and only processes dates with file changes. Requires initial `--all` run:
+```bash
+# Initial setup
+uv run memory-sync backfill --all --summarize
+
+# Then use incremental mode
+uv run memory-sync backfill --incremental --summarize
+```
+
+State is tracked in `~/.memory-sync/state.json`. See `docs/INCREMENTAL_BACKFILL.md` for detailed strategies.
 
 ### Hand-Written Content Preservation (`--preserve`)
 
 When regenerating memory files:
-- Detects hand-written content (anything after the auto-generated footer)
-- Keeps your manual notes, insights, and edits
-- Updates only the auto-generated sections
+- **Simple mode**: Appends hand-written content (after footer marker)
+- **LLM mode** (`--summarize`): Passes existing content to LLM with explicit instructions to:
+  - Preserve temporal order and chronological structure
+  - Respect existing style (narrative vs. bullets)
+  - Merge by theme rather than duplicating sections
+  - Retain hand-written insights and reflections
+  - Update rather than replace the existing baseline
 
 This lets you:
 1. Generate initial memory file from logs
@@ -162,32 +206,68 @@ uv run memory-sync compare --sessions-dir /path/to/sessions --memory-dir /path/t
 
 Generate missing daily memory files.
 
+**Date Selection (choose exactly one):**
+- `--date YYYY-MM-DD` - Single specific date
+- `--today` - Current date only (for nightly automation)
+- `--since YYYY-MM-DD` - From date to present (for catch-up)
+- `--all` - All missing dates (for initial setup)
+- `--incremental` - Only dates changed since last run
+
+**Examples:**
+
 ```bash
-# Single date
-uv run memory-sync backfill --date 2026-01-15
+# NIGHTLY AUTOMATION (recommended)
+uv run memory-sync backfill --today --summarize
 
-# All missing dates (dry run)
-uv run memory-sync backfill --all --dry-run
+# CATCH-UP after a gap
+uv run memory-sync backfill --since 2026-01-28 --summarize
 
-# All missing dates (simple extraction)
-uv run memory-sync backfill --all
+# SMART AUTOMATION (requires prior --all run)
+uv run memory-sync backfill --incremental --summarize
 
-# All missing dates (LLM summarization)
+# INITIAL SETUP
 uv run memory-sync backfill --all --summarize
 
-# Overwrite existing files
-uv run memory-sync backfill --all --force
+# SINGLE DATE
+uv run memory-sync backfill --date 2026-01-15 --summarize
 
-# Preserve hand-written content when overwriting
-uv run memory-sync backfill --all --preserve --force
+# DRY RUN - preview only
+uv run memory-sync backfill --today --dry-run
 ```
 
-Options:
+**Regenerating Existing Files (--force --preserve):**
+
+Use `--force --preserve` when you need to regenerate files that already exist while keeping your hand-written notes:
+
+```bash
+# Regenerate a single date, preserve hand-written content
+uv run memory-sync backfill --date 2026-01-15 --force --preserve --summarize
+
+# Regenerate today's file after adding more session activity
+uv run memory-sync backfill --today --force --preserve --summarize
+
+# Regenerate multiple days, preserving all hand-written sections
+uv run memory-sync backfill --since 2026-01-28 --force --preserve --summarize
+
+# Upgrade all files from simple extraction to LLM summaries
+uv run memory-sync backfill --all --force --preserve --summarize
+```
+
+**Common regeneration scenarios:**
+- Added hand-written notes and want to update with new session data
+- Switching from simple extraction to LLM summarization
+- Testing different LLM models while keeping your edits
+- Session logs were updated after initial generation
+- Model improved and you want better summaries
+
+**Options:**
 - `--dry-run`: Show what would be created without creating files
-- `--force`: Overwrite existing files
+- `--force`: Overwrite existing files (required for regeneration)
 - `--preserve`: Keep hand-written content from existing files
 - `--summarize`: Use LLM for narrative summaries (requires `anthropic` package)
 - `--model`: Choose LLM model (default: `claude-sonnet-4-20250514`)
+- `--sessions-dir`: Override default sessions directory
+- `--memory-dir`: Override default memory directory
 
 ### `stats`
 
@@ -297,10 +377,67 @@ make test-cov
 
 See `Makefile` for all available test targets.
 
+## Automation Examples
+
+### Nightly Cron Job (Recommended)
+
+Process only today's date - fast and efficient:
+
+```bash
+# Edit crontab
+crontab -e
+
+# Add this line (runs daily at 3am)
+0 3 * * * cd ~/.openclaw/skills/memory-sync && uv run memory-sync backfill --today --summarize >> ~/.memory-sync/cron.log 2>&1
+```
+
+### Smart Incremental Mode
+
+Automatically detects changes since last run:
+
+```bash
+# First time: backfill everything
+cd ~/.openclaw/skills/memory-sync
+uv run memory-sync backfill --all --summarize
+
+# Set up nightly incremental
+0 3 * * * cd ~/.openclaw/skills/memory-sync && uv run memory-sync backfill --incremental --summarize >> ~/.memory-sync/cron.log 2>&1
+```
+
+### Performance Comparison
+
+| Mode | Time per Day | API Calls | Best For |
+|------|-------------|-----------|----------|
+| `--all` | 5-10 min × N days | High | Initial setup only |
+| `--since` | 5-10 min × N days | High | Recovery/catch-up |
+| `--today` | 30-60 sec | 1 | **Nightly automation** ⭐ |
+| `--incremental` | 30-60 sec × changed | Low | Smart automation |
+
+See `docs/INCREMENTAL_BACKFILL.md` for detailed strategies.
+
 ## Configuration
 
-Set these environment variables:
-- `ANTHROPIC_API_KEY`: Required for `--summarize` mode
+### Environment Variables
+
+**ANTHROPIC_API_KEY** - Required for `--summarize` mode:
+```bash
+# Set temporarily for current session
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+
+# Or add to shell profile for persistence
+echo 'export ANTHROPIC_API_KEY=sk-ant-api03-...' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify it's set
+echo $ANTHROPIC_API_KEY
+```
+
+**Note**: Simple extraction mode (without `--summarize`) works without an API key.
+
+### State Files
+
+State tracking (for `--incremental` mode):
+- `~/.memory-sync/state.json`: Tracks last run timestamp and processing history
 
 ## License
 

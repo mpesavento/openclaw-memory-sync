@@ -10,7 +10,7 @@ from .sessions import get_date_range, collect_daily_activity
 
 # Thresholds for sparse detection
 MIN_FILE_SIZE_BYTES = 1024  # Files under 1KB considered potentially sparse
-MIN_BYTES_PER_MESSAGE = 10  # Less than 10 bytes per message is too sparse
+MIN_BYTES_PER_MESSAGE = 7  # Less than 7 bytes per message is too sparse
 
 
 def find_gaps(sessions_dir: Path, memory_dir: Path) -> dict:
