@@ -758,15 +758,7 @@ More content here to ensure it's over 100 bytes minimum.
 # STATE TESTS
 # =============================================================================
 
-@pytest.fixture
-def temp_state_dir(tmp_path, monkeypatch):
-    """Create temporary state directory."""
-    state_dir = tmp_path / '.memory-sync'
-    state_dir.mkdir(parents=True, exist_ok=True)
-    
-    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
-    
-    return state_dir
+# Note: temp_state_dir fixture is defined in conftest.py
 
 
 class TestStateFile:

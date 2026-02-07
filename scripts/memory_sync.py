@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Memory Sync - Single-file CLI for OpenClaw session log analysis.
 
+Requires Python 3.11+ and click. Optional: anthropic for LLM summaries.
+
 This tool scrapes JSONL session logs from OpenClaw and generates/backfills
 daily memory files. It includes automatic secret sanitization, LLM-based
 summarization, gap detection, and state tracking for incremental backfill.
@@ -20,6 +22,7 @@ import sys
 import os
 import re
 import json
+import time
 from pathlib import Path
 from datetime import datetime, date, timezone, timedelta
 from dataclasses import dataclass, field
@@ -51,7 +54,13 @@ AUTO_GENERATED_HEADER_PATTERN = r'\*Auto-generated from \d+ session messages\*'
 AUTO_GENERATED_FOOTER = '*Review and edit this draft to capture what\'s actually important.*'
 
 # Validation thresholds
-MIN_VALID_SIZE = 100  # bytes
+MIN_VALID_SIZE = 100  # bytes - minimum size for a memory file to be considered non-empty
+
+# Default LLM model for summarization
+DEFAULT_SUMMARIZE_MODEL = "claude-sonnet-4-20250514"
+
+# Rate limiting for batch LLM calls (seconds between requests)
+LLM_BATCH_DELAY_SECONDS = 1.0
 
 
 # =============================================================================
@@ -187,8 +196,8 @@ SECRET_PATTERNS = [
     (r'tvly-[A-Za-z0-9]{32,}', 'TAVILY-API-KEY'),
     (r'serp-[0-9a-z]{32,}', 'SERPAPI-KEY'),
     
-    # --- Vector DB / Storage ---
-    (r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'UUID-KEY'),
+    # NOTE: UUID pattern removed - too aggressive, matches session IDs and message IDs
+    # NOTE: HEX-32 pattern removed - matches git commit hashes and MD5 checksums
     
     # ==========================================================================
     # STRUCTURAL PATTERNS (Format-based detection)
@@ -200,7 +209,7 @@ SECRET_PATTERNS = [
     (r'(?:postgresql|mysql|mongodb|redis)://[^:@\s]+:[^@\s]+@[^\s]+', 'CONNECTION-STRING'),
     (r'\w+://[^:]+:[^@]+@\S+', 'CONNECTION-STRING'),
     (r'\b[0-9a-f]{64}\b', 'HEX-TOKEN-64'),
-    (r'\b[0-9a-f]{32}\b', 'HEX-TOKEN-32'),
+    # HEX-32 removed: (r'\b[0-9a-f]{32}\b', 'HEX-TOKEN-32') - matches git hashes
     (r'\b[A-Za-z0-9+/]{40,}={0,2}\b', 'BASE64'),
     
     # ==========================================================================
@@ -282,6 +291,23 @@ def classify_content(content: str) -> ContentSensitivity:
     return ContentSensitivity.SAFE
 
 
+def _make_context_replacer(pattern: str, redaction_type: str):
+    """Factory function to create a replacement function with proper closure capture.
+    
+    This avoids the closure variable capture bug where loop variables are
+    captured by reference rather than value.
+    """
+    def replace_with_context(match):
+        if len(match.groups()) >= 2:
+            key_part = match.group(1)
+            return f"{key_part}=[REDACTED-{redaction_type}]"
+        elif 'bearer' in pattern.lower():
+            return f"{match.group(1)}[REDACTED-{redaction_type}]"
+        else:
+            return f"[REDACTED-{redaction_type}]"
+    return replace_with_context
+
+
 def sanitize_content(content: str) -> str:
     """Remove all potentially sensitive content before processing.
     
@@ -293,16 +319,8 @@ def sanitize_content(content: str) -> str:
     for pattern, redaction_type in SECRET_PATTERNS:
         if '(' in pattern and ')' in pattern:
             if any(kw in pattern for kw in ['api', 'secret', 'password', 'token', 'bearer']):
-                def replace_with_context(match):
-                    if len(match.groups()) >= 2:
-                        key_part = match.group(1)
-                        return f"{key_part}=[REDACTED-{redaction_type}]"
-                    elif 'bearer' in pattern.lower():
-                        return f"{match.group(1)}[REDACTED-{redaction_type}]"
-                    else:
-                        return f"[REDACTED-{redaction_type}]"
-                
-                sanitized = re.sub(pattern, replace_with_context, sanitized)
+                replacer = _make_context_replacer(pattern, redaction_type)
+                sanitized = re.sub(pattern, replacer, sanitized)
             else:
                 sanitized = re.sub(pattern, f"[REDACTED-{redaction_type}]", sanitized)
         else:
@@ -322,7 +340,7 @@ def validate_no_secrets(content: str) -> Tuple[bool, List[str]]:
     if re.search(r'sk-(?:proj-)?[a-zA-Z0-9]{30,}', content):
         violations.append("Found potential OpenAI API key (sk-...)")
     
-    if re.search(r'sk-ant-[a-zA-Z0-9\-_]{90,}', content):
+    if re.search(r'sk-ant-[a-zA-Z0-9\-_]{32,}', content):
         violations.append("Found potential Anthropic API key (sk-ant-...)")
     
     if re.search(r'ak-[a-zA-Z0-9]{20,}', content):
@@ -1506,7 +1524,7 @@ def summarize_with_anthropic(
     messages: list[Message],
     transitions: list[ModelTransition],
     existing_content: Optional[str] = None,
-    model: str = "claude-sonnet-4-20250514"
+    model: Optional[str] = None
 ) -> str:
     """Summarize a day's conversation using Anthropic API."""
     try:
@@ -1525,6 +1543,10 @@ def summarize_with_anthropic(
         )
     
     client = anthropic.Anthropic(api_key=api_key)
+    
+    # Use default model if not specified
+    if model is None:
+        model = DEFAULT_SUMMARIZE_MODEL
     
     conversation_text = prepare_conversation_text(messages)
     transitions_note = format_transitions_note(transitions)
@@ -1565,7 +1587,7 @@ def generate_summarized_memory(
     output_path: Path,
     force: bool = False,
     preserve: bool = False,
-    model: str = "claude-sonnet-4-20250514"
+    model: Optional[str] = None
 ) -> str:
     """Generate a daily memory file using LLM summarization."""
     existing_content = ""
@@ -1858,7 +1880,7 @@ def compare(sessions_dir, memory_dir):
 @click.option("--force", is_flag=True, help="Overwrite existing files")
 @click.option("--preserve", is_flag=True, help="Preserve hand-written content from existing files")
 @click.option("--summarize", is_flag=True, help="Use LLM to generate narrative summaries (requires anthropic)")
-@click.option("--model", default="claude-sonnet-4-20250514", help="Model to use for summarization")
+@click.option("--model", default=None, help=f"Model to use for summarization (default: {DEFAULT_SUMMARIZE_MODEL})")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
 def backfill(target_date, backfill_all, today, since_date, incremental, dry_run, force, preserve, summarize, model, sessions_dir, memory_dir):
@@ -2005,13 +2027,16 @@ def backfill(target_date, backfill_all, today, since_date, incremental, dry_run,
                 for gap in all_gaps:
                     click.echo(f"Would create: {memory_path / f'{gap.date}.md'}")
             else:
-                for gap in all_gaps:
+                for i, gap in enumerate(all_gaps):
                     output_path = memory_path / f"{gap.date}.md"
                     click.echo(f"Summarizing {gap.date}...", nl=False)
                     try:
                         path = generate_fn(gap.date, sessions_path, output_path, force=True, preserve=preserve)
                         created.append(path)
                         click.echo(" done")
+                        # Rate limiting: delay between LLM calls to avoid hitting API limits
+                        if i < len(all_gaps) - 1:  # Don't delay after the last one
+                            time.sleep(LLM_BATCH_DELAY_SECONDS)
                     except Exception as e:
                         errors.append((gap.date, str(e)))
                         click.echo(f" error: {e}")
@@ -2119,7 +2144,7 @@ def extract(target_date, query, model, output_format, sessions_dir):
 
 @main.command()
 @click.option("--date", "target_date", required=True, help="Date to summarize (YYYY-MM-DD)")
-@click.option("--model", default="claude-sonnet-4-20250514", help="Model to use for summarization")
+@click.option("--model", default=None, help=f"Model to use for summarization (default: {DEFAULT_SUMMARIZE_MODEL})")
 @click.option("--output", default=None, help="Write to file (default: stdout)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 def summarize(target_date, model, output, sessions_dir):
@@ -2132,6 +2157,8 @@ def summarize(target_date, model, output, sessions_dir):
 
     log_date = parse_date_str(target_date)
 
+    # Track whether we're using a temp file for cleanup
+    using_temp_file = output is None
     if output:
         output_path = Path(output)
     else:
@@ -2145,10 +2172,9 @@ def summarize(target_date, model, output, sessions_dir):
             force=True, model=model
         )
 
-        if not output:
+        if using_temp_file:
             content = output_path.read_text()
             click.echo(content)
-            output_path.unlink()
         else:
             click.echo(f"Wrote summary to: {output_path}")
 
@@ -2158,6 +2184,10 @@ def summarize(target_date, model, output, sessions_dir):
     except Exception as e:
         click.echo(f"Error generating summary: {e}", err=True)
         sys.exit(1)
+    finally:
+        # Clean up temp file regardless of success or failure
+        if using_temp_file and output_path.exists():
+            output_path.unlink()
 
 
 @main.command()

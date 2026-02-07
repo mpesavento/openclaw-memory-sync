@@ -73,9 +73,9 @@ The patterns are organized into three tiers:
 
 ### Storage / Database
 
-| Service | Pattern | Example | Redaction Type |
-|---------|---------|---------|----------------|
-| UUID-based | `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}` | `12345678-1234-...` | `UUID-KEY` |
+> **Removed patterns**: UUID and HEX-32 patterns were removed due to excessive false positives:
+> - UUID pattern matched session IDs, message IDs, and other non-sensitive identifiers
+> - HEX-32 pattern matched git commit hashes and MD5 checksums
 
 ## Structural Patterns
 
@@ -88,10 +88,11 @@ These detect secrets by their format rather than a known prefix.
 | SSH Public | `ssh-(?:rsa\|dss\|ed25519\|ecdsa)\s+[A-Za-z0-9+/]{30,}` | OpenSSH format | `SSH-PUBLIC-KEY` |
 | Connection | `(?:postgresql\|mysql\|mongodb\|redis)://...` | With embedded creds | `CONNECTION-STRING` |
 | Hex 64 | `\b[0-9a-f]{64}\b` | Trello tokens, etc. | `HEX-TOKEN-64` |
-| Hex 32 | `\b[0-9a-f]{32}\b` | ElevenLabs, Oura, etc. | `HEX-TOKEN-32` |
 | Base64 | `\b[A-Za-z0-9+/]{40,}={0,2}\b` | High-entropy strings | `BASE64` |
 
-**Important:** Hex patterns must come BEFORE base64 since hex characters are a subset of base64 characters.
+> **Removed**: HEX-32 pattern (`\b[0-9a-f]{32}\b`) was removed because it matches git commit hashes and MD5 checksums.
+
+**Important:** Hex-64 pattern must come BEFORE base64 since hex characters are a subset of base64 characters.
 
 ## Generic Patterns
 

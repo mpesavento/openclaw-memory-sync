@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 import tempfile
 import shutil
+from datetime import datetime
 
 
 @pytest.fixture
@@ -83,3 +84,14 @@ def temp_sessions_with_all(temp_dir, fixtures_dir):
         shutil.copy(f, sessions_dir / f.name)
 
     return sessions_dir
+
+
+@pytest.fixture
+def temp_state_dir(tmp_path, monkeypatch):
+    """Create temporary state directory for incremental backfill tests."""
+    state_dir = tmp_path / '.memory-sync'
+    state_dir.mkdir(parents=True, exist_ok=True)
+    
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    
+    return state_dir
