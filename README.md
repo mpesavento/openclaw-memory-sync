@@ -89,13 +89,30 @@ uv run memory-sync backfill --all --preserve --force
 
 ## Features
 
+### 🔒 Automatic Secret Sanitization
+
+All content is automatically scanned and sanitized before:
+- Being sent to LLM APIs
+- Being written to memory files
+- Being displayed in CLI output
+
+**Detects and redacts**:
+- 30+ explicit API key patterns (OpenAI, Anthropic, GitHub, AWS, Stripe, Discord, Slack, etc.)
+- JWT tokens, SSH keys, database connection strings
+- Password assignments, bearer tokens, environment variables
+- High-entropy secrets and generic token patterns
+
+Secrets are replaced with `[REDACTED-TYPE]` placeholders. Multiple validation layers ensure no secrets leak through.
+
+See `docs/SECRET_PATTERNS.md` for complete pattern documentation.
+
 ### Simple Extraction Mode (Default)
 
 Generates structured memory files with:
 - **Topics Covered**: Key topics extracted from conversation
 - **Session Flow**: Overview of tasks, questions, and context
 - **Key Decisions**: Important decisions or insights
-- **Technical Details**: Commands, files, errors
+- **Technical Details**: Commands, files, errors (sanitized)
 - **Model Transitions**: When you switched between AI models
 - **Message Compaction**: Statistics on message distribution
 
@@ -107,6 +124,8 @@ Uses Claude to generate:
 - Intelligent insights extraction
 
 Requires `ANTHROPIC_API_KEY` environment variable.
+
+**Security**: All conversations are sanitized before being sent to the LLM, and outputs are validated.
 
 ### Hand-Written Content Preservation (`--preserve`)
 
@@ -214,7 +233,7 @@ List model transitions with context.
 
 ```bash
 uv run memory-sync transitions
-uv run memory-sync transitions --since 2026-01-15
+uv run memory-sync transitions --date 2026-01-15
 uv run memory-sync transitions --output transitions.json
 ```
 
@@ -261,12 +280,22 @@ the backfill logic to support content preservation...
 # Install with dev dependencies
 uv sync --extra dev
 
-# Run tests
-uv run pytest
+# Run all tests
+make test
+# or: uv run pytest
 
-# Run tests with coverage
-uv run pytest --cov=memory_sync --cov-report=html
+# Run security tests only
+make test-security
+
+# Run integration tests
+make test-integration
+
+# Run with coverage
+make test-cov
+# or: uv run pytest --cov=memory_sync --cov-report=html
 ```
+
+See `Makefile` for all available test targets.
 
 ## Configuration
 

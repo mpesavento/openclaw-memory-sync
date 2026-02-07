@@ -9,6 +9,8 @@ from .models import Message, ModelTransition
 from .parser import get_messages, get_model_transitions, get_compactions
 from .sessions import find_session_files
 from .compare import find_gaps
+from .sanitize import sanitize_content, validate_no_secrets
+import sys
 
 
 # Markers for identifying auto-generated content
@@ -125,9 +127,12 @@ def extract_key_exchanges(messages: list[Message], max_exchanges: int = 10) -> l
                 response_text = messages[j].text_content.strip()
                 break
 
-        # Create excerpt (first 100 chars)
+        # Create excerpt (first 100 chars) and sanitize
         user_excerpt = text[:100] + ('...' if len(text) > 100 else '')
+        user_excerpt = sanitize_content(user_excerpt)
+        
         response_excerpt = response_text[:100] + ('...' if len(response_text) > 100 else '') if response_text else ""
+        response_excerpt = sanitize_content(response_excerpt)
 
         exchanges.append({
             'time': msg.timestamp.strftime('%H:%M'),
@@ -169,6 +174,8 @@ def extract_decisions(messages: list[Message], max_decisions: int = 10) -> list[
             for match in matches:
                 decision = match.strip()
                 if len(decision) > 10 and len(decision) < 200:
+                    # Sanitize decision text before adding
+                    decision = sanitize_content(decision)
                     decisions.append(decision)
 
         # Note tool calls as actions
@@ -220,10 +227,11 @@ def render_daily_template(context: dict) -> str:
     lines.append(f"*Auto-generated from {context['message_count']} session messages*")
     lines.append("")
 
-    # Compaction summary if available
+    # Compaction summary if available (sanitized)
     if context.get('compaction_summary'):
         lines.append("## Context Summary")
-        lines.append(context['compaction_summary'])
+        sanitized_summary = sanitize_content(context['compaction_summary'])
+        lines.append(sanitized_summary)
         lines.append("")
 
     # Topics
@@ -342,7 +350,31 @@ def generate_daily_memory(
     if preserve and existing_content:
         _, hand_written = extract_preserved_content(existing_content)
         if hand_written:
+            # Sanitize hand-written content too (in case it was manually added before sanitization was implemented)
+            hand_written = sanitize_content(hand_written)
             content = content + "\n\n" + hand_written
+
+    # CRITICAL: Validate no secrets before writing
+    is_valid, violations = validate_no_secrets(content)
+    
+    if not is_valid:
+        print(f"Warning: Generated content contains potential secrets: {violations}", file=sys.stderr)
+        print("Attempting to sanitize...", file=sys.stderr)
+        
+        # Fallback: sanitize the output
+        content = sanitize_content(content)
+        
+        # Re-validate
+        is_valid, violations = validate_no_secrets(content)
+        
+        if not is_valid:
+            # Still has secrets after sanitization - this is a critical error
+            raise ValueError(
+                f"Generated memory file still contains secrets after sanitization: {violations}. "
+                "Refusing to write file."
+            )
+        
+        print("Content sanitized successfully.", file=sys.stderr)
 
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -6,12 +6,14 @@ description: >
   model switches, (2) Verifying memory coverage, (3) Reconstructing lost memory,
   (4) Running automated daily memory sync via cron/heartbeat. Supports simple
   extraction and LLM-based narrative summaries. Commands: compare, backfill,
-  summarize, extract, transitions, validate, stats.
+  summarize, extract, transitions, validate, stats. Includes automatic secret
+  sanitization (30+ API key patterns, JWT, SSH keys, passwords) with multiple
+  validation layers to prevent secret leakage.
 ---
 
 # Memory Sync
 
-Tool for maintaining agent memory continuity across model switches.
+Tool for maintaining agent memory continuity across model switches with automatic secret sanitization.
 
 ## Quick Start
 
@@ -124,7 +126,7 @@ List model transitions with context.
 
 ```bash
 uv run memory-sync transitions
-uv run memory-sync transitions --since 2026-02-01
+uv run memory-sync transitions --date 2026-02-01
 uv run memory-sync transitions --output transitions.json
 ```
 
@@ -196,3 +198,17 @@ Auto-generated markers:
 - Footer: `*Review and edit this draft to capture what's actually important.*`
 
 Content after the footer marker is considered hand-written and will be preserved.
+
+## Security & Sanitization
+
+All content is automatically sanitized to prevent secret leakage:
+
+- **30+ explicit patterns**: OpenAI, Anthropic, GitHub, AWS, Stripe, Discord, Slack, Notion, Google, Brave, Tavily, SerpAPI, etc.
+- **Structural detection**: JWT tokens, SSH keys, database connection strings, high-entropy base64
+- **Generic patterns**: API keys, tokens, passwords, environment variables
+- **Multiple validation layers**: Input sanitization, LLM prompt instructions, output validation
+- **Defense-in-depth**: Secrets redacted at every stage (extraction, LLM processing, file writes, CLI display)
+
+Secrets are replaced with `[REDACTED-TYPE]` placeholders.
+
+See `docs/SECRET_PATTERNS.md` for complete pattern documentation.

@@ -12,6 +12,8 @@ from typing import Optional
 from .models import Message, ModelTransition
 from .parser import get_messages, get_model_transitions, get_compactions
 from .sessions import find_session_files
+from .sanitize import sanitize_content, validate_no_secrets
+import sys
 
 
 # =============================================================================
@@ -41,14 +43,24 @@ STYLE GUIDE (based on how your memory files actually look):
    - Relationship context, emotional beats
    - Your own reactions, uncertainties, discoveries
 
-4. **Preserve technical details exactly**
-   - File paths, URLs, IDs, command examples
-   - Error messages, configuration values
+4. **Preserve important technical details**
+   - File names (not full paths to sensitive locations), URLs, IDs
+   - Command names and error types (not full commands with arguments)
+   - High-level technical decisions
    - These are critical for future-you
 
 5. **End with forward-looking sections**
    - "## Open Threads" or "## Coming Up" for follow-ups
    - Optional closing note with personality
+
+SECURITY - CRITICAL:
+- **NEVER include API keys, tokens, passwords, or secrets** of any kind
+- **NEVER include connection strings** with embedded credentials
+- **NEVER include configuration values** that could be secrets (keys, tokens, passwords)
+- **NEVER include environment variable values** for sensitive vars (API_KEY, TOKEN, SECRET, PASSWORD)
+- **NEVER include full command arguments** that might contain credentials
+- If something looks like it might be a secret, **DO NOT include it**
+- When in doubt, describe what happened at a high level without the actual values
 
 EXAMPLE STRUCTURE (adapt to what actually happened):
 
@@ -97,6 +109,8 @@ def prepare_conversation_text(
 ) -> str:
     """
     Prepare conversation text for summarization.
+    
+    Sanitizes all message content to remove secrets before formatting.
     """
     lines = []
     total_chars = 0
@@ -107,6 +121,9 @@ def prepare_conversation_text(
         text = msg.text_content.strip()
         if not text:
             continue
+
+        # CRITICAL: Sanitize content before any processing
+        text = sanitize_content(text)
 
         # Truncate very long messages
         if len(text) > 2000:
@@ -296,6 +313,28 @@ def generate_summarized_memory(
         model=model,
         existing_content=existing_content
     )
+
+    # CRITICAL: Validate no secrets before writing
+    is_valid, violations = validate_no_secrets(content)
+    
+    if not is_valid:
+        print(f"Warning: Generated content contains potential secrets: {violations}", file=sys.stderr)
+        print("Attempting to sanitize...", file=sys.stderr)
+        
+        # Fallback: sanitize the output
+        content = sanitize_content(content)
+        
+        # Re-validate
+        is_valid, violations = validate_no_secrets(content)
+        
+        if not is_valid:
+            # Still has secrets after sanitization - this is a critical error
+            raise ValueError(
+                f"Generated memory file still contains secrets after sanitization: {violations}. "
+                "Refusing to write file. This indicates the LLM included secrets despite instructions."
+            )
+        
+        print("Content sanitized successfully.", file=sys.stderr)
 
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)

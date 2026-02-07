@@ -7,6 +7,8 @@ import json
 
 import click
 
+from .sanitize import sanitize_content
+
 
 # Default paths for OpenClaw
 def get_default_sessions_dir() -> Path:
@@ -234,14 +236,14 @@ def extract(target_date, query, model, output_format, sessions_dir):
     click.echo(f"Found {len(messages)} matching messages")
     click.echo("")
 
-    # Format output
+    # Format output (with sanitization)
     if output_format == 'json':
         data = [
             {
                 'id': m.id,
                 'timestamp': m.timestamp.isoformat(),
                 'role': m.role,
-                'text': m.text_content[:500],  # Truncate for readability
+                'text': sanitize_content(m.text_content),  # Sanitize full content
                 'model': m.model,
                 'provider': m.provider,
             }
@@ -253,7 +255,7 @@ def extract(target_date, query, model, output_format, sessions_dir):
         for msg in messages:
             time_str = msg.timestamp.strftime('%Y-%m-%d %H:%M')
             role = msg.role.upper()
-            text = msg.text_content[:200] + ('...' if len(msg.text_content) > 200 else '')
+            text = sanitize_content(msg.text_content)  # Sanitize full content
             click.echo(f"[{time_str}] {role}: {text}")
             click.echo("")
 
@@ -264,7 +266,7 @@ def extract(target_date, query, model, output_format, sessions_dir):
             model_str = f" ({msg.model})" if msg.model else ""
             click.echo(f"### [{time_str}] {role}{model_str}")
             click.echo("")
-            text = msg.text_content[:500] + ('...' if len(msg.text_content) > 500 else '')
+            text = sanitize_content(msg.text_content)  # Sanitize full content
             click.echo(text)
             click.echo("")
 
@@ -329,10 +331,10 @@ def summarize(target_date, model, output, sessions_dir):
 
 
 @main.command()
-@click.option("--since", default=None, help="Show transitions since date (YYYY-MM-DD)")
+@click.option("--date", "since_date", default=None, help="Show transitions since date (YYYY-MM-DD)")
 @click.option("--output", default=None, help="Write JSON to file")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
-def transitions(since, output, sessions_dir):
+def transitions(since_date, output, sessions_dir):
     """List model transitions with context."""
     from .transitions import extract_transitions, format_transitions_report, write_transitions_json
 
@@ -342,16 +344,16 @@ def transitions(since, output, sessions_dir):
         click.echo(f"Error: Sessions directory not found: {sessions_path}", err=True)
         sys.exit(1)
 
-    since_date = parse_date(since) if since else None
+    since_date_parsed = parse_date(since_date) if since_date else None
 
-    trans_list = list(extract_transitions(sessions_path, since=since_date))
+    trans_list = list(extract_transitions(sessions_path, since=since_date_parsed))
 
     if output:
         output_path = Path(output)
         write_transitions_json(trans_list, output_path)
         click.echo(f"Wrote {len(trans_list)} transitions to {output_path}")
     else:
-        report = format_transitions_report(trans_list, since=since_date)
+        report = format_transitions_report(trans_list, since=since_date_parsed)
         click.echo(report)
 
 
