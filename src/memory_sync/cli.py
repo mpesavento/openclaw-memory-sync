@@ -329,10 +329,10 @@ def summarize(target_date, model, output, sessions_dir):
 
 
 @main.command()
-@click.option("--since", default=None, help="Show transitions since date (YYYY-MM-DD)")
+@click.option("--date", "since_date", default=None, help="Show transitions since date (YYYY-MM-DD)")
 @click.option("--output", default=None, help="Write JSON to file")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
-def transitions(since, output, sessions_dir):
+def transitions(since_date, output, sessions_dir):
     """List model transitions with context."""
     from .transitions import extract_transitions, format_transitions_report, write_transitions_json
 
@@ -342,16 +342,16 @@ def transitions(since, output, sessions_dir):
         click.echo(f"Error: Sessions directory not found: {sessions_path}", err=True)
         sys.exit(1)
 
-    since_date = parse_date(since) if since else None
+    since_date_parsed = parse_date(since_date) if since_date else None
 
-    trans_list = list(extract_transitions(sessions_path, since=since_date))
+    trans_list = list(extract_transitions(sessions_path, since=since_date_parsed))
 
     if output:
         output_path = Path(output)
         write_transitions_json(trans_list, output_path)
         click.echo(f"Wrote {len(trans_list)} transitions to {output_path}")
     else:
-        report = format_transitions_report(trans_list, since=since_date)
+        report = format_transitions_report(trans_list, since=since_date_parsed)
         click.echo(report)
 
 

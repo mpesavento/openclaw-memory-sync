@@ -124,7 +124,7 @@ List model transitions with context.
 
 ```bash
 uv run memory-sync transitions
-uv run memory-sync transitions --since 2026-02-01
+uv run memory-sync transitions --date 2026-02-01
 uv run memory-sync transitions --output transitions.json
 ```
 
