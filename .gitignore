@@ -39,3 +39,6 @@ htmlcov/
 # uv
 .uv/
 uv.lock
+
+.claude/
+.cursor/

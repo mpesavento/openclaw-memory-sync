@@ -1,448 +1,184 @@
-# memory-sync
+# OpenClaw Memory Sync
 
-A tool for consolidating OpenClaw session logs into complete daily memory files. Solves the critical issue of partial memories caused by model switching - when you change models, OpenClaw creates new sessions that can overwrite existing memories, losing earlier context. memory-sync backfills from all session logs to ensure nothing is lost.
+Tool for maintaining agent memory continuity across model switches.
 
-## Use Case
+## The Problem
 
-### The Problem: Partial Memories from Model Switching
+OpenClaw agents maintain continuity through memory files (`memory/YYYY-MM-DD.md`, `MEMORY.md`). But there's a critical failure mode:
 
-**Critical OpenClaw Issue**: When you switch models during your work session, OpenClaw creates a new session file. This causes the new model to potentially overwrite existing memories for that date, leading to **partial or incomplete memory files**. You lose context from earlier conversations when the model changed.
+**Model switches create memory isolation.** When OpenClaw switches between models (Opus → Sonnet → GPT), each model instance operates independently. If one instance doesn't write to memory files, that context is lost to future instances.
 
-This is a critical failure of the OpenClaw memory system - your AI assistant literally forgets what happened earlier in the day when you switch models.
+In practice, this means:
+- Daily memory files never get created (or are sparse)
+- Important conversations vanish between model switches
+- The agent "forgets" decisions, context, and relationships
+- MEMORY.md drifts out of sync or stays empty
 
-### The Solution: Backfill from Session Logs
+We discovered this when an entire day (330 messages) was missing, and another day had only 827 bytes for 598 messages—missing an important thread entirely.
 
-**memory-sync** solves this by:
-1. **Consolidating** all session logs for a date (across model switches) into complete memory files
-2. **Extracting** key information from session logs (messages, decisions, model transitions)
-3. **Organizing** them into structured daily memory files
-4. **Preserving** your hand-written notes when regenerating files
-5. **Summarizing** conversations using LLMs (optional) for narrative summaries
+## The Solution
 
-This creates a complete, accurate personal knowledge base from your AI interactions, regardless of how many times you switched models.
+**The JSONL session logs are the ground truth.** OpenClaw writes every message, tool call, and model transition to `~/.openclaw/agents/main/sessions/*.jsonl`. These persist across ALL model switches.
+
+This tool:
+1. Parses the native JSONL session logs
+2. Reconstructs daily memory files from the actual conversation history
+3. Optionally uses LLM summarization for coherent narratives
+4. Runs automated backfill to prevent future gaps
+5. Sanitizes secrets before writing anything to disk
+
+**Result:** Memory continuity survives model switches because it's reconstructed from persistent logs, not dependent on any single model instance maintaining state.
+
+## Use Cases
+
+- **Memory gaps after model switches** - Reconstruct memory that was lost during model transitions
+- **Verify memory coverage** - Identify days with missing or sparse memory files
+- **Automated daily sync** - Run via cron to keep memory files current
+- **Backfill historical data** - Generate memory files for past sessions
+- **Recovery after failures** - The logs are always there; memory can always be rebuilt
+
+## Project Structure
+
+```
+openclaw-memory-sync/
+├── scripts/
+│   └── memory_sync.py      # Single-file CLI tool (all logic here)
+├── tests/
+│   ├── test_memory_sync.py # Consolidated test suite
+│   ├── conftest.py         # Pytest fixtures
+│   └── fixtures/           # Test data files
+├── references/
+│   └── SECRET_PATTERNS.md  # Documentation of secret detection patterns
+├── SKILL.md                # OpenClaw skill definition (agent instructions)
+└── README.md               # This file
+```
 
 ## Installation
 
-### As an OpenClaw Skill (Recommended)
+Requires Python 3.11+ and `click`:
 
 ```bash
-# Clone to OpenClaw skills directory (rename to match skill name)
+pip install click
+
+# Optional: for direct API summarization backends
+pip install openai
+```
+
+### As an OpenClaw Skill
+
+```bash
 cd ~/.openclaw/skills
 git clone git@github.com:mpesavento/openclaw-memory-sync.git memory-sync
 
-# OpenClaw auto-discovers it. Verify with:
-openclaw skills list | grep memory-sync
-```
-
-Then use via `uv run` from the skill directory, or read the SKILL.md for usage.
-
-### Standalone with uv
-
-```bash
-# Clone the repo
-git clone https://github.com/mpesavento/openclaw-memory-sync.git
-cd openclaw-memory-sync
-
-# Run directly (uv handles dependencies automatically)
-uv run memory-sync compare
-uv run memory-sync backfill --all
-
-# Or install as a global tool
-uv tool install .
-memory-sync compare  # now available globally
-```
-
-### With pip
-
-```bash
-# Basic installation
-pip install -e .
-
-# With development dependencies
-pip install -e ".[dev]"
-
-# With LLM summarization support
-pip install -e ".[summarize]"
-
-# Everything
-pip install -e ".[all]"
+# Create an alias for convenience
+alias memory-sync="python ~/.openclaw/skills/memory-sync/scripts/memory_sync.py"
 ```
 
 ## Quick Start
 
 ```bash
-# Compare session logs to memory files and find gaps
-uv run memory-sync compare
+# Check for gaps in memory coverage
+memory-sync compare
 
-# Nightly automation - backfill today only (fast: 30-60 seconds)
-uv run memory-sync backfill --today --summarize
+# Backfill today's memory (simple extraction, fast)
+memory-sync backfill --today
 
-# Backfill a specific date
-uv run memory-sync backfill --date 2026-01-15
+# Backfill with LLM narrative summary (recommended for quality)
+memory-sync backfill --today --summarize --preserve
 
-# Catch-up after a gap - backfill from a date to present
-uv run memory-sync backfill --since 2026-01-28 --summarize
-
-# Smart automation - only process dates changed since last run
-uv run memory-sync backfill --incremental --summarize
-
-# Initial setup - backfill all missing dates
-uv run memory-sync backfill --all --summarize
-
-# Regenerate existing file while preserving hand-written notes
-uv run memory-sync backfill --date 2026-01-15 --force --preserve --summarize
+# Backfill all missing dates
+memory-sync backfill --all
 ```
-
-## Features
-
-### 🔒 Automatic Secret Sanitization
-
-All content is automatically scanned and sanitized before:
-- Being sent to LLM APIs
-- Being written to memory files
-- Being displayed in CLI output
-
-**Detects and redacts**:
-- 30+ explicit API key patterns (OpenAI, Anthropic, GitHub, AWS, Stripe, Discord, Slack, etc.)
-- JWT tokens, SSH keys, database connection strings
-- Password assignments, bearer tokens, environment variables
-- High-entropy secrets and generic token patterns
-
-Secrets are replaced with `[REDACTED-TYPE]` placeholders. Multiple validation layers ensure no secrets leak through.
-
-See `docs/SECRET_PATTERNS.md` for complete pattern documentation.
-
-### Simple Extraction Mode (Default)
-
-Generates structured memory files with:
-- **Topics Covered**: Key topics extracted from conversation
-- **Session Flow**: Overview of tasks, questions, and context
-- **Key Decisions**: Important decisions or insights
-- **Technical Details**: Commands, files, errors (sanitized)
-- **Model Transitions**: When you switched between AI models
-- **Message Compaction**: Statistics on message distribution
-
-### LLM Summarization Mode (`--summarize`)
-
-Uses Claude to generate:
-- Natural narrative summaries of your day's conversations
-- Context-aware topic grouping
-- Intelligent insights extraction
-
-**Requires `ANTHROPIC_API_KEY` environment variable:**
-```bash
-export ANTHROPIC_API_KEY=sk-ant-api03-...
-```
-
-**Security**: All conversations are sanitized before being sent to the LLM, and outputs are validated.
-
-### Incremental Backfill Strategies ⭐
-
-**Problem**: Running `--all --summarize` on historical data takes 5-10 minutes per day. For nightly automation, this is inefficient.
-
-**Solution**: Use incremental backfill modes to only process new or changed data:
-
-#### `--today` (Recommended for Nightly Automation)
-Process only the current day. **Fast** (~30-60 seconds) and perfect for cron jobs:
-```bash
-0 3 * * * cd ~/.openclaw/skills/memory-sync && uv run memory-sync backfill --today --summarize
-```
-
-#### `--since YYYY-MM-DD` (Manual Catch-Up)
-Backfill from a specific date to present. Use after gaps or model switches:
-```bash
-# Backfill last week
-uv run memory-sync backfill --since 2026-01-28 --summarize
-```
-
-#### `--incremental` (Smart Automation)
-Tracks last successful run and only processes dates with file changes. Requires initial `--all` run:
-```bash
-# Initial setup
-uv run memory-sync backfill --all --summarize
-
-# Then use incremental mode
-uv run memory-sync backfill --incremental --summarize
-```
-
-State is tracked in `~/.memory-sync/state.json`. See `docs/INCREMENTAL_BACKFILL.md` for detailed strategies.
-
-### Hand-Written Content Preservation (`--preserve`)
-
-When regenerating memory files:
-- **Simple mode**: Appends hand-written content (after footer marker)
-- **LLM mode** (`--summarize`): Passes existing content to LLM with explicit instructions to:
-  - Preserve temporal order and chronological structure
-  - Respect existing style (narrative vs. bullets)
-  - Merge by theme rather than duplicating sections
-  - Retain hand-written insights and reflections
-  - Update rather than replace the existing baseline
-
-This lets you:
-1. Generate initial memory file from logs
-2. Add your own notes and context
-3. Regenerate later without losing your edits
-
-## Directory Structure
-
-By default, memory-sync looks for:
-- **Session logs**: `~/.openclaw/agents/main/sessions/*.jsonl`
-- **Memory files**: `~/.openclaw/workspace/memory/*.md`
-
-Override with `--sessions-dir` and `--memory-dir` options.
 
 ## Commands
 
-### `compare`
+| Command | Description |
+|---------|-------------|
+| `compare` | Find gaps between session logs and memory files |
+| `backfill` | Generate missing daily memory files |
+| `summarize` | Generate LLM summary for a single day |
+| `extract` | Extract conversations matching criteria |
+| `transitions` | List model transitions |
+| `validate` | Check memory files for consistency issues |
+| `stats` | Show coverage statistics |
 
-Compare session logs to memory files and report gaps.
+## Summarization Modes
 
+**Simple Extraction (without `--summarize`):**
+- Fast, no LLM calls
+- Extracts topics, key exchanges, and decisions via pattern matching
+- Best for initial backfills or systems without LLM access
+
+**LLM Summarization (with `--summarize`):**
+- Generates coherent narrative summaries
+- Uses OpenClaw's native model by default (no API key needed)
+- Alternative backends: `--summarize-backend anthropic` or `--summarize-backend openai`
+
+**Recommended for daily use:**
 ```bash
-uv run memory-sync compare
-uv run memory-sync compare --sessions-dir /path/to/sessions --memory-dir /path/to/memory
+memory-sync backfill --today --summarize --preserve
 ```
 
-### `backfill`
+## Secret Sanitization
 
-Generate missing daily memory files.
+All content is automatically sanitized before writing to memory files. Detected secrets are replaced with `[REDACTED-TYPE]` placeholders.
 
-**Date Selection (choose exactly one):**
-- `--date YYYY-MM-DD` - Single specific date
-- `--today` - Current date only (for nightly automation)
-- `--since YYYY-MM-DD` - From date to present (for catch-up)
-- `--all` - All missing dates (for initial setup)
-- `--incremental` - Only dates changed since last run
+Supported patterns include:
+- API keys (OpenAI, Anthropic, GitHub, AWS, Stripe, etc.)
+- Tokens (JWT, OAuth, session tokens)
+- Connection strings with credentials
+- SSH keys and certificates
+- Environment variable references
 
-**Examples:**
-
-```bash
-# NIGHTLY AUTOMATION (recommended)
-uv run memory-sync backfill --today --summarize
-
-# CATCH-UP after a gap
-uv run memory-sync backfill --since 2026-01-28 --summarize
-
-# SMART AUTOMATION (requires prior --all run)
-uv run memory-sync backfill --incremental --summarize
-
-# INITIAL SETUP
-uv run memory-sync backfill --all --summarize
-
-# SINGLE DATE
-uv run memory-sync backfill --date 2026-01-15 --summarize
-
-# DRY RUN - preview only
-uv run memory-sync backfill --today --dry-run
-```
-
-**Regenerating Existing Files (--force --preserve):**
-
-Use `--force --preserve` when you need to regenerate files that already exist while keeping your hand-written notes:
-
-```bash
-# Regenerate a single date, preserve hand-written content
-uv run memory-sync backfill --date 2026-01-15 --force --preserve --summarize
-
-# Regenerate today's file after adding more session activity
-uv run memory-sync backfill --today --force --preserve --summarize
-
-# Regenerate multiple days, preserving all hand-written sections
-uv run memory-sync backfill --since 2026-01-28 --force --preserve --summarize
-
-# Upgrade all files from simple extraction to LLM summaries
-uv run memory-sync backfill --all --force --preserve --summarize
-```
-
-**Common regeneration scenarios:**
-- Added hand-written notes and want to update with new session data
-- Switching from simple extraction to LLM summarization
-- Testing different LLM models while keeping your edits
-- Session logs were updated after initial generation
-- Model improved and you want better summaries
-
-**Options:**
-- `--dry-run`: Show what would be created without creating files
-- `--force`: Overwrite existing files (required for regeneration)
-- `--preserve`: Keep hand-written content from existing files
-- `--summarize`: Use LLM for narrative summaries (requires `anthropic` package)
-- `--model`: Choose LLM model (default: `claude-sonnet-4-20250514`)
-- `--sessions-dir`: Override default sessions directory
-- `--memory-dir`: Override default memory directory
-
-### `stats`
-
-Show coverage statistics.
-
-```bash
-uv run memory-sync stats
-```
-
-### `summarize`
-
-Generate an LLM summary for a single day (requires ANTHROPIC_API_KEY).
-
-```bash
-uv run memory-sync summarize --date 2026-01-15
-uv run memory-sync summarize --date 2026-01-15 --output summary.md
-```
-
-Options:
-- `--date`: Date to summarize (required)
-- `--model`: Model to use (default: `claude-sonnet-4-20250514`)
-- `--output`: Write to file instead of stdout
-
-### `extract`
-
-Extract conversations matching criteria.
-
-```bash
-uv run memory-sync extract --date 2026-01-15
-uv run memory-sync extract --query "memory sync"
-uv run memory-sync extract --model claude-sonnet-4 --format json
-```
-
-Options:
-- `--date`: Filter by specific date
-- `--query`: Search term in messages (case-insensitive)
-- `--model`: Filter by model used
-- `--format`: Output format (`md`, `json`, `text`; default: `md`)
-
-### `transitions`
-
-List model transitions with context.
-
-```bash
-uv run memory-sync transitions
-uv run memory-sync transitions --date 2026-01-15
-uv run memory-sync transitions --output transitions.json
-```
-
-### `validate`
-
-Check memory files for consistency issues.
-
-```bash
-uv run memory-sync validate
-```
-
-## Example Memory File
-
-```markdown
-# 2026-01-15 (Wednesday)
-
-*Auto-generated from 42 session messages*
-
-## Topics Covered
-- Python packaging and dependency management
-- Testing strategies with pytest
-- Git workflow and commit conventions
-
-## Session Flow
-Started with questions about pytest fixtures, then moved to refactoring
-the backfill logic to support content preservation...
-
-## Key Decisions
-- Use `extract_preserved_content()` to separate auto-generated from hand-written sections
-- Pass existing content to LLM for intelligent merging
-
----
-
-*Review and edit this draft to capture what's actually important.*
-
-## My Notes
-
-(This section is preserved when regenerating with --preserve)
-```
-
-## Development
-
-```bash
-# Install with dev dependencies
-uv sync --extra dev
-
-# Run all tests
-make test
-# or: uv run pytest
-
-# Run security tests only
-make test-security
-
-# Run integration tests
-make test-integration
-
-# Run with coverage
-make test-cov
-# or: uv run pytest --cov=memory_sync --cov-report=html
-```
-
-See `Makefile` for all available test targets.
-
-## Automation Examples
-
-### Nightly Cron Job (Recommended)
-
-Process only today's date - fast and efficient:
-
-```bash
-# Edit crontab
-crontab -e
-
-# Add this line (runs daily at 3am)
-0 3 * * * cd ~/.openclaw/skills/memory-sync && uv run memory-sync backfill --today --summarize >> ~/.memory-sync/cron.log 2>&1
-```
-
-### Smart Incremental Mode
-
-Automatically detects changes since last run:
-
-```bash
-# First time: backfill everything
-cd ~/.openclaw/skills/memory-sync
-uv run memory-sync backfill --all --summarize
-
-# Set up nightly incremental
-0 3 * * * cd ~/.openclaw/skills/memory-sync && uv run memory-sync backfill --incremental --summarize >> ~/.memory-sync/cron.log 2>&1
-```
-
-### Performance Comparison
-
-| Mode | Time per Day | API Calls | Best For |
-|------|-------------|-----------|----------|
-| `--all` | 5-10 min × N days | High | Initial setup only |
-| `--since` | 5-10 min × N days | High | Recovery/catch-up |
-| `--today` | 30-60 sec | 1 | **Nightly automation** ⭐ |
-| `--incremental` | 30-60 sec × changed | Low | Smart automation |
-
-See `docs/INCREMENTAL_BACKFILL.md` for detailed strategies.
+See [references/SECRET_PATTERNS.md](references/SECRET_PATTERNS.md) for the complete list of 30+ detection patterns.
 
 ## Configuration
 
-### Environment Variables
+**Default paths:**
+- Session logs: `~/.openclaw/agents/main/sessions/*.jsonl`
+- Memory files: `~/.openclaw/workspace/memory/`
 
-**ANTHROPIC_API_KEY** - Required for `--summarize` mode:
+**Override with CLI flags:**
 ```bash
-# Set temporarily for current session
-export ANTHROPIC_API_KEY=sk-ant-api03-...
-
-# Or add to shell profile for persistence
-echo 'export ANTHROPIC_API_KEY=sk-ant-api03-...' >> ~/.bashrc
-source ~/.bashrc
-
-# Verify it's set
-echo $ANTHROPIC_API_KEY
+memory-sync compare --sessions-dir /path/to/sessions --memory-dir /path/to/memory
 ```
 
-**Note**: Simple extraction mode (without `--summarize`) works without an API key.
+## Automated Usage
 
-### State Files
+### Nightly Cron
 
-State tracking (for `--incremental` mode):
-- `~/.memory-sync/state.json`: Tracks last run timestamp and processing history
+```bash
+# Run at 3am daily
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
+```
+
+### Incremental Mode
+
+Only process days that have changed since the last run:
+
+```bash
+memory-sync backfill --incremental --summarize --preserve
+```
+
+State is tracked in `~/.memory-sync/state.json`.
+
+## Running Tests
+
+```bash
+pip install pytest
+
+# Run all tests
+pytest tests/
+
+# Run specific test class
+pytest tests/test_memory_sync.py::TestSummarizeWithOpenclaw -v
+```
+
+## Documentation
+
+- **[SKILL.md](SKILL.md)** - OpenClaw skill definition with detailed usage instructions for agents
+- **[references/SECRET_PATTERNS.md](references/SECRET_PATTERNS.md)** - Complete documentation of secret detection patterns
 
 ## License
 
 MIT
-
-## Contributing
-
-PRs welcome! Please run tests before submitting.
