@@ -20,8 +20,8 @@ Requires Python 3.11+ and `click`:
 ```bash
 pip install click
 
-# Optional: for LLM-generated summaries
-pip install anthropic
+# Optional: for direct API summarization (only if not using OpenClaw backend)
+pip install openai
 ```
 
 ## Quick Start
@@ -36,10 +36,10 @@ alias memory-sync="python ~/.openclaw/skills/memory-sync/scripts/memory_sync.py"
 # Check for gaps
 memory-sync compare
 
-# Backfill today's memory
+# Backfill today's memory (simple extraction - fast, no LLM)
 memory-sync backfill --today
 
-# Backfill with LLM narrative (requires anthropic and ANTHROPIC_API_KEY)
+# Backfill with LLM narrative (uses OpenClaw's native model - no API key needed)
 memory-sync backfill --today --summarize
 
 # Backfill all missing
@@ -61,6 +61,34 @@ memory-sync backfill --all
 | `validate` | Check memory files for consistency issues |
 | `stats` | Show coverage statistics |
 
+## Simple Extraction vs LLM Summarization
+
+The backfill command supports two modes:
+
+**Simple Extraction (without `--summarize`):**
+- Fast, no LLM or API calls needed
+- Extracts topics via keyword frequency analysis
+- Identifies key user questions and assistant responses
+- Detects decision markers from text patterns
+- Produces structured output with Topics, Key Exchanges, Decisions sections
+- With `--preserve`: Hand-written content is **appended** to the end of the new file
+- Best for: Quick backfills, initial setup, systems without LLM access
+
+**LLM Summarization (with `--summarize`) - Recommended:**
+- Uses LLM to generate narrative summaries
+- Produces coherent 2-4 paragraph prose
+- Better context and insight extraction
+- With `--preserve`: Existing content is **passed to the LLM** with instructions to incorporate it into the new summary, maintaining temporal order and thematic structure
+- Best for: Daily automation, high-quality memory files
+
+**Recommended for regular use:**
+```bash
+# Best quality: LLM summary that incorporates any existing notes
+memory-sync backfill --today --summarize --preserve
+```
+
+Both modes automatically sanitize secrets before writing.
+
 ## Common Workflows
 
 ### Initial Setup
@@ -76,11 +104,14 @@ memory-sync backfill --all
 ### Nightly Automation (Recommended)
 
 ```bash
-# Fast: Process only today (~30-60 seconds)
-memory-sync backfill --today --summarize
+# Best: LLM summary that incorporates any existing notes
+memory-sync backfill --today --summarize --preserve
 
 # Smart: Process only days changed since last run
-memory-sync backfill --incremental --summarize
+memory-sync backfill --incremental --summarize --preserve
+
+# Or use a specific backend if preferred
+memory-sync backfill --today --summarize --preserve --summarize-backend anthropic
 ```
 
 ### Catch-Up After Gaps
@@ -110,14 +141,45 @@ Secrets are replaced with `[REDACTED-TYPE]` placeholders.
 
 See `references/SECRET_PATTERNS.md` for complete pattern list.
 
+## Summarization Backends
+
+The `--summarize` flag supports multiple backends via `--summarize-backend`:
+
+| Backend | Description | API Key Required |
+|---------|-------------|------------------|
+| `openclaw` (default) | Uses OpenClaw's `sessions spawn` with your configured model | No |
+| `anthropic` | Direct Anthropic API via openai package | `ANTHROPIC_API_KEY` |
+| `openai` | Direct OpenAI API via openai package | `OPENAI_API_KEY` |
+
+### Examples
+
+```bash
+# Default: use OpenClaw's native model (no API key needed)
+memory-sync backfill --today --summarize
+
+# Explicit backend selection
+memory-sync backfill --today --summarize --summarize-backend openclaw
+memory-sync backfill --today --summarize --summarize-backend anthropic
+memory-sync backfill --today --summarize --summarize-backend openai
+
+# Override model for any backend
+memory-sync backfill --today --summarize --model claude-sonnet-4-20250514
+memory-sync backfill --today --summarize --summarize-backend openai --model gpt-4o
+```
+
+The `openclaw` backend is recommended as it:
+- Uses your existing OpenClaw configuration
+- Requires no separate API keys
+- Leverages whatever model you have configured in OpenClaw
+
 ## Automated Usage
 
 ### Nightly Cron (3am)
 
-Process today only - fast and efficient:
+Process today with LLM summary, preserving any existing notes:
 
 ```bash
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --today --summarize >> ~/.memory-sync/cron.log 2>&1
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
 ```
 
 ### Smart Incremental Mode
@@ -125,11 +187,11 @@ Process today only - fast and efficient:
 Automatically detects changes since last run:
 
 ```bash
-# Initial backfill (run once)
-python scripts/memory_sync.py backfill --all --summarize
+# Initial backfill (run once, simple extraction for speed)
+python scripts/memory_sync.py backfill --all
 
-# Then set up nightly incremental
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --incremental --summarize >> ~/.memory-sync/cron.log 2>&1
+# Then set up nightly incremental with LLM summaries
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --incremental --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
 ```
 
 State is tracked in `~/.memory-sync/state.json`.
@@ -144,24 +206,36 @@ State is tracked in `~/.memory-sync/state.json`.
 - `--sessions-dir /path/to/sessions`
 - `--memory-dir /path/to/memory`
 
-**Environment variables:**
-- `ANTHROPIC_API_KEY` - Required for `--summarize` option
+**Environment variables (only for direct API backends):**
+- `ANTHROPIC_API_KEY` - Required for `--summarize-backend anthropic`
+- `OPENAI_API_KEY` - Required for `--summarize-backend openai`
+
+The default `openclaw` backend requires no API keys - it uses your OpenClaw configuration.
 
 ```bash
-# Set temporarily
+# Only needed if using direct API backends
 export ANTHROPIC_API_KEY=sk-ant-...
-
-# Or add to shell profile
-echo 'export ANTHROPIC_API_KEY=sk-ant-...' >> ~/.bashrc
-source ~/.bashrc
+export OPENAI_API_KEY=sk-...
 ```
 
 ## Content Preservation
 
-When regenerating existing files with `--force --preserve`:
+The `--preserve` flag behavior depends on whether `--summarize` is used:
 
-- **Simple mode**: Hand-written content (after footer) is appended
-- **LLM mode** (`--summarize`): Existing content is passed to LLM with instructions to incorporate it, preserving temporal order and thematic structure
+**Without `--summarize` (simple extraction):**
+- Hand-written content (after footer marker) is **appended verbatim** to the end of the newly generated file
+- The new extraction replaces the auto-generated portion, your notes are kept at the end
+
+**With `--summarize` (LLM mode):**
+- Existing hand-written content is **passed to the LLM** as context
+- The LLM is instructed to incorporate your notes into the new summary
+- Result: Your insights are woven into a coherent narrative, not just appended
+
+**Example:**
+```bash
+# Regenerate with LLM, incorporating existing notes into the summary
+memory-sync backfill --date 2026-02-05 --force --preserve --summarize
+```
 
 Auto-generated markers:
 - Header: `*Auto-generated from N session messages*`
@@ -182,8 +256,9 @@ Content after the footer marker is considered hand-written and will be preserved
 - `--dry-run` - Show what would be created without creating files
 - `--force` - Overwrite existing files (required for regeneration)
 - `--preserve` - Keep hand-written content when regenerating
-- `--summarize` - Use LLM for narrative summaries (requires ANTHROPIC_API_KEY)
-- `--model MODEL` - Model for summarization (default: claude-sonnet-4-20250514)
+- `--summarize` - Use LLM for narrative summaries
+- `--summarize-backend BACKEND` - Backend for summarization: `openclaw` (default), `anthropic`, `openai`
+- `--model MODEL` - Model override for summarization (default varies by backend)
 
 ## Performance
 

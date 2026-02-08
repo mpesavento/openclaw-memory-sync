@@ -17,6 +17,7 @@ import json
 import shutil
 import time
 import os
+from unittest.mock import patch, MagicMock
 
 # Import from the single-file module
 from memory_sync import (
@@ -45,6 +46,7 @@ from memory_sync import (
     format_gap_report,
     # Backfill
     generate_daily_memory,
+    generate_summarized_memory,
     backfill_all_missing,
     extract_topics,
     extract_key_exchanges,
@@ -53,6 +55,14 @@ from memory_sync import (
     render_daily_template,
     extract_preserved_content,
     AUTO_GENERATED_FOOTER,
+    # Summarization
+    get_summarizer,
+    summarize_with_openclaw,
+    summarize_with_openai_package,
+    _build_summarization_prompt,
+    prepare_conversation_text,
+    format_transitions_note,
+    MEMORY_SYSTEM_PROMPT,
     # Transitions
     extract_transitions,
     write_transitions_json,
@@ -423,6 +433,357 @@ class TestBackfillSanitization:
         
         assert "sk-abc123xyz789" not in content
         assert "[REDACTED" in content
+
+
+# =============================================================================
+# SUMMARIZATION TESTS
+# =============================================================================
+
+class TestGetSummarizer:
+    """Tests for get_summarizer factory function."""
+    
+    def test_get_openclaw_summarizer(self):
+        """Get openclaw summarizer."""
+        summarizer = get_summarizer('openclaw')
+        assert summarizer is not None
+        assert callable(summarizer)
+    
+    def test_get_openai_summarizer(self):
+        """Get openai summarizer."""
+        summarizer = get_summarizer('openai')
+        assert summarizer is not None
+        assert callable(summarizer)
+    
+    def test_get_anthropic_summarizer(self):
+        """Get anthropic summarizer."""
+        summarizer = get_summarizer('anthropic')
+        assert summarizer is not None
+        assert callable(summarizer)
+    
+    def test_invalid_backend_raises(self):
+        """Invalid backend raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            get_summarizer('invalid')
+        assert 'Unknown summarization backend' in str(exc_info.value)
+
+
+class TestBuildSummarizationPrompt:
+    """Tests for _build_summarization_prompt function."""
+    
+    def test_builds_prompt_with_messages(self):
+        """Prompt includes conversation content."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello, how are you?',
+            ),
+            Message(
+                id='msg2',
+                timestamp=datetime(2026, 2, 6, 10, 1, 0, tzinfo=timezone.utc),
+                role='assistant',
+                text_content='I am doing well, thank you!',
+                model='claude-sonnet-4',
+            ),
+        ]
+        
+        prompt = _build_summarization_prompt(date(2026, 2, 6), messages, [])
+        
+        assert '2026-02-06' in prompt
+        assert 'Hello' in prompt or 'doing well' in prompt
+    
+    def test_builds_prompt_with_transitions(self):
+        """Prompt includes model transitions."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello',
+            ),
+        ]
+        transitions = [
+            ModelTransition(
+                timestamp=datetime(2026, 2, 6, 10, 30, 0, tzinfo=timezone.utc),
+                from_model='claude-sonnet-4',
+                to_model='gpt-4o',
+                session_id='test',
+                provider='openai',
+            ),
+        ]
+        
+        prompt = _build_summarization_prompt(date(2026, 2, 6), messages, transitions)
+        
+        assert 'transition' in prompt.lower() or 'gpt-4o' in prompt
+    
+    def test_includes_existing_content(self):
+        """Prompt includes existing hand-written content."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello',
+            ),
+        ]
+        existing = f"""# 2026-02-06
+
+*Auto-generated from 5 session messages*
+
+Some content.
+
+---
+
+*Review and edit this draft to capture what's actually important.*
+
+My hand-written notes here."""
+        
+        prompt = _build_summarization_prompt(date(2026, 2, 6), messages, [], existing_content=existing)
+        
+        assert 'hand-written notes' in prompt.lower() or 'My hand-written notes' in prompt
+
+
+class TestPrepareConversationText:
+    """Tests for prepare_conversation_text function."""
+    
+    def test_formats_messages(self):
+        """Messages are formatted correctly."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello world',
+            ),
+            Message(
+                id='msg2',
+                timestamp=datetime(2026, 2, 6, 10, 1, 0, tzinfo=timezone.utc),
+                role='assistant',
+                text_content='Hi there',
+                model='claude-sonnet-4',
+            ),
+        ]
+        
+        text = prepare_conversation_text(messages)
+        
+        assert 'USER' in text
+        assert 'ASSISTANT' in text
+        assert 'Hello world' in text
+        assert 'Hi there' in text
+    
+    def test_truncates_long_content(self):
+        """Long message content is truncated."""
+        long_content = 'x' * 1000
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content=long_content,
+            ),
+        ]
+        
+        text = prepare_conversation_text(messages)
+        
+        # Content is truncated to 500 chars per message
+        assert len(text) < 1000
+    
+    def test_sanitizes_content(self):
+        """Secrets in messages are sanitized."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='My key is sk-abc123xyz789012345678901234567890',
+            ),
+        ]
+        
+        text = prepare_conversation_text(messages)
+        
+        assert 'sk-abc123' not in text
+        assert '[REDACTED' in text
+
+
+class TestFormatTransitionsNote:
+    """Tests for format_transitions_note function."""
+    
+    def test_empty_transitions(self):
+        """Empty transitions list returns empty string."""
+        result = format_transitions_note([])
+        assert result == ""
+    
+    def test_formats_transitions(self):
+        """Transitions are formatted correctly."""
+        transitions = [
+            ModelTransition(
+                timestamp=datetime(2026, 2, 6, 10, 30, 0, tzinfo=timezone.utc),
+                from_model='claude-sonnet-4',
+                to_model='gpt-4o',
+                session_id='test',
+                provider='openai',
+            ),
+        ]
+        
+        result = format_transitions_note(transitions)
+        
+        assert 'transition' in result.lower()
+        assert 'claude-sonnet-4' in result or 'gpt-4o' in result
+
+
+class TestSummarizeWithOpenclaw:
+    """Tests for summarize_with_openclaw function."""
+    
+    def test_raises_when_openclaw_not_found(self):
+        """Raises RuntimeError when openclaw CLI not found."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello',
+            ),
+        ]
+        
+        # Mock subprocess.run to raise FileNotFoundError (simulating openclaw not installed)
+        with patch('memory_sync.subprocess.run') as mock_run:
+            mock_run.side_effect = FileNotFoundError("No such file or directory: 'openclaw'")
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                summarize_with_openclaw(date(2026, 2, 6), messages, [])
+            
+            assert 'openclaw' in str(exc_info.value).lower()
+    
+    def test_raises_on_nonzero_exit(self):
+        """Raises RuntimeError when openclaw returns non-zero exit code."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello',
+            ),
+        ]
+        
+        # Mock subprocess.run to return non-zero exit code
+        with patch('memory_sync.subprocess.run') as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 1
+            mock_result.stderr = "Some error occurred"
+            mock_run.return_value = mock_result
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                summarize_with_openclaw(date(2026, 2, 6), messages, [])
+            
+            assert 'failed' in str(exc_info.value).lower()
+    
+    def test_returns_sanitized_output_on_success(self):
+        """Returns sanitized output when openclaw succeeds."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello',
+            ),
+        ]
+        
+        # Mock subprocess.run to return success with some output
+        with patch('memory_sync.subprocess.run') as mock_run:
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "This is the summary output from the LLM."
+            mock_run.return_value = mock_result
+            
+            result = summarize_with_openclaw(date(2026, 2, 6), messages, [])
+            
+            assert "summary output" in result.lower()
+
+
+class TestSummarizeWithOpenaiPackage:
+    """Tests for summarize_with_openai_package function."""
+    
+    def test_raises_without_api_key(self):
+        """Raises ValueError when API key not set."""
+        messages = [
+            Message(
+                id='msg1',
+                timestamp=datetime(2026, 2, 6, 10, 0, 0, tzinfo=timezone.utc),
+                role='user',
+                text_content='Hello',
+            ),
+        ]
+        
+        # Ensure API keys are not set
+        old_anthropic = os.environ.pop('ANTHROPIC_API_KEY', None)
+        old_openai = os.environ.pop('OPENAI_API_KEY', None)
+        
+        try:
+            with pytest.raises((ValueError, ImportError)):
+                summarize_with_openai_package(
+                    date(2026, 2, 6), messages, [],
+                    provider='anthropic'
+                )
+        finally:
+            # Restore env vars
+            if old_anthropic:
+                os.environ['ANTHROPIC_API_KEY'] = old_anthropic
+            if old_openai:
+                os.environ['OPENAI_API_KEY'] = old_openai
+
+
+class TestGenerateSummarizedMemory:
+    """Tests for generate_summarized_memory function."""
+    
+    def test_requires_messages(self, temp_dir):
+        """Raises ValueError when no messages found."""
+        sessions_dir = temp_dir / "sessions"
+        sessions_dir.mkdir()
+        
+        # Create empty session file
+        session_file = sessions_dir / "empty.jsonl"
+        session_file.write_text('{"type":"session","id":"test","version":3}\n')
+        
+        memory_dir = temp_dir / "memory"
+        memory_dir.mkdir()
+        output_path = memory_dir / "2026-02-06.md"
+        
+        with pytest.raises(ValueError) as exc_info:
+            generate_summarized_memory(
+                date(2026, 2, 6),
+                sessions_dir,
+                output_path,
+                backend='openclaw'
+            )
+        
+        assert 'No messages found' in str(exc_info.value)
+
+
+class TestBackfillCommandWithBackend:
+    """Tests for backfill command with --summarize-backend option."""
+    
+    def test_backfill_help_shows_backend_option(self, runner):
+        """Help shows --summarize-backend option."""
+        result = runner.invoke(main, ['backfill', '--help'])
+        
+        assert result.exit_code == 0
+        assert '--summarize-backend' in result.output
+        assert 'openclaw' in result.output
+        assert 'openai' in result.output
+        assert 'anthropic' in result.output
+
+
+class TestSummarizeCommandWithBackend:
+    """Tests for summarize command with --summarize-backend option."""
+    
+    def test_summarize_help_shows_backend_option(self, runner):
+        """Help shows --summarize-backend option."""
+        result = runner.invoke(main, ['summarize', '--help'])
+        
+        assert result.exit_code == 0
+        assert '--summarize-backend' in result.output
+        assert 'openclaw' in result.output
 
 
 # =============================================================================

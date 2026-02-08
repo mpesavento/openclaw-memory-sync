@@ -1519,6 +1519,169 @@ def format_transitions_note(transitions: list[ModelTransition]) -> str:
     return '\n'.join(lines)
 
 
+def _build_summarization_prompt(
+    log_date: date,
+    messages: list[Message],
+    transitions: list[ModelTransition],
+    existing_content: Optional[str] = None
+) -> str:
+    """Build the prompt for LLM summarization."""
+    conversation_text = prepare_conversation_text(messages)
+    transitions_note = format_transitions_note(transitions)
+    
+    day_name = log_date.strftime('%A, %Y-%m-%d')
+    
+    user_prompt = f"""Generate a daily memory summary for {day_name}.
+
+Conversation log:
+{conversation_text}
+{transitions_note}
+
+Remember: Focus on accomplishments, decisions, insights, and context. Be concise and narrative."""
+    
+    if existing_content:
+        _, hand_written = extract_preserved_content(existing_content)
+        if hand_written:
+            user_prompt += f"\n\nExisting hand-written notes (PRESERVE AND INCORPORATE):\n{hand_written}"
+    
+    return user_prompt
+
+
+import subprocess
+
+
+def summarize_with_openclaw(
+    log_date: date,
+    messages: list[Message],
+    transitions: list[ModelTransition],
+    existing_content: Optional[str] = None,
+    model: Optional[str] = None
+) -> str:
+    """Use OpenClaw's sessions_spawn to summarize via the user's configured model.
+    
+    This is the preferred method as it uses the user's existing OpenClaw setup
+    and doesn't require separate API keys.
+    """
+    user_prompt = _build_summarization_prompt(log_date, messages, transitions, existing_content)
+    
+    # Combine system prompt and user prompt for the task
+    full_prompt = f"""{MEMORY_SYSTEM_PROMPT}
+
+---
+
+{user_prompt}"""
+    
+    cmd = [
+        "openclaw", "sessions", "spawn",
+        "--task", full_prompt,
+        "--cleanup", "delete",
+        "--timeout", "120"
+    ]
+    
+    if model:
+        cmd.extend(["--model", model])
+    
+    try:
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=180,
+            env={**os.environ}  # Inherit environment
+        )
+        if result.returncode == 0:
+            # sessions_spawn returns the agent's response
+            return sanitize_content(result.stdout.strip())
+        else:
+            raise RuntimeError(f"sessions_spawn failed: {result.stderr}")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("OpenClaw summarization timed out after 180 seconds")
+    except FileNotFoundError:
+        raise RuntimeError(
+            "openclaw CLI not found. "
+            "Make sure OpenClaw is installed and in your PATH, "
+            "or use --summarize-backend=anthropic or --summarize-backend=openai"
+        )
+
+
+def summarize_with_openai_package(
+    log_date: date,
+    messages: list[Message],
+    transitions: list[ModelTransition],
+    existing_content: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: str = "openai"
+) -> str:
+    """Fallback summarization using OpenAI package (works with OpenAI and Anthropic APIs)."""
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError(
+            "openai package not installed. "
+            "Install with: pip install openai"
+        )
+    
+    # Configure based on provider
+    if provider == "anthropic":
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        base_url = "https://api.anthropic.com/v1"
+        default_model = "claude-sonnet-4-20250514"
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY not set. "
+                "Set it with: export ANTHROPIC_API_KEY=sk-ant-..."
+            )
+    else:  # openai
+        api_key = os.environ.get('OPENAI_API_KEY')
+        base_url = None  # Use default
+        default_model = "gpt-4o"
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY not set. "
+                "Set it with: export OPENAI_API_KEY=sk-..."
+            )
+    
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    
+    user_prompt = _build_summarization_prompt(log_date, messages, transitions, existing_content)
+    
+    response = client.chat.completions.create(
+        model=model or default_model,
+        messages=[
+            {"role": "system", "content": MEMORY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ],
+        max_tokens=2000,
+        temperature=0.3
+    )
+    
+    return sanitize_content(response.choices[0].message.content)
+
+
+def get_summarizer(backend: str):
+    """Factory function to get the appropriate summarizer based on backend choice."""
+    
+    def openclaw_summarizer(log_date, messages, transitions, existing_content=None, model=None):
+        return summarize_with_openclaw(log_date, messages, transitions, existing_content, model)
+    
+    def openai_summarizer(log_date, messages, transitions, existing_content=None, model=None):
+        return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="openai")
+    
+    def anthropic_summarizer(log_date, messages, transitions, existing_content=None, model=None):
+        return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="anthropic")
+    
+    backends = {
+        'openclaw': openclaw_summarizer,
+        'openai': openai_summarizer,
+        'anthropic': anthropic_summarizer,
+    }
+    
+    if backend not in backends:
+        raise ValueError(f"Unknown summarization backend: {backend}. Choose from: {list(backends.keys())}")
+    
+    return backends[backend]
+
+
 def summarize_with_anthropic(
     log_date: date,
     messages: list[Message],
@@ -1587,9 +1750,20 @@ def generate_summarized_memory(
     output_path: Path,
     force: bool = False,
     preserve: bool = False,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    backend: str = 'openclaw'
 ) -> str:
-    """Generate a daily memory file using LLM summarization."""
+    """Generate a daily memory file using LLM summarization.
+    
+    Args:
+        log_date: The date to generate memory for
+        sessions_dir: Path to session logs directory
+        output_path: Path to write the memory file
+        force: Overwrite existing files
+        preserve: Preserve hand-written content from existing files
+        model: Model override for summarization
+        backend: Summarization backend ('openclaw', 'openai', or 'anthropic')
+    """
     existing_content = ""
     if output_path.exists():
         if not force and not preserve:
@@ -1614,11 +1788,21 @@ def generate_summarized_memory(
     messages.sort(key=lambda m: m.timestamp)
     transitions.sort(key=lambda t: t.timestamp)
     
-    summary = summarize_with_anthropic(
-        log_date, messages, transitions,
-        existing_content=existing_content if preserve else None,
-        model=model
-    )
+    # Get the appropriate summarizer based on backend
+    summarizer = get_summarizer(backend)
+    
+    try:
+        summary = summarizer(
+            log_date, messages, transitions,
+            existing_content=existing_content if preserve else None,
+            model=model
+        )
+    except Exception as e:
+        # If openclaw backend fails, provide helpful error message
+        if backend == 'openclaw':
+            print(f"Warning: OpenClaw summarization failed ({e})", file=sys.stderr)
+            print("Try using --summarize-backend=anthropic or --summarize-backend=openai", file=sys.stderr)
+        raise
     
     lines = []
     lines.append(f"# {log_date} ({log_date.strftime('%A')})")
@@ -1879,11 +2063,15 @@ def compare(sessions_dir, memory_dir):
 @click.option("--dry-run", is_flag=True, help="Show what would be created")
 @click.option("--force", is_flag=True, help="Overwrite existing files")
 @click.option("--preserve", is_flag=True, help="Preserve hand-written content from existing files")
-@click.option("--summarize", is_flag=True, help="Use LLM to generate narrative summaries (requires anthropic)")
-@click.option("--model", default=None, help=f"Model to use for summarization (default: {DEFAULT_SUMMARIZE_MODEL})")
+@click.option("--summarize", is_flag=True, help="Use LLM to generate narrative summaries")
+@click.option("--summarize-backend", "summarize_backend",
+              type=click.Choice(['openclaw', 'openai', 'anthropic']),
+              default='openclaw',
+              help="Backend for LLM summarization (default: openclaw - uses native model)")
+@click.option("--model", default=None, help=f"Model override for summarization (default varies by backend)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
-def backfill(target_date, backfill_all, today, since_date, incremental, dry_run, force, preserve, summarize, model, sessions_dir, memory_dir):
+def backfill(target_date, backfill_all, today, since_date, incremental, dry_run, force, preserve, summarize, summarize_backend, model, sessions_dir, memory_dir):
     """Generate missing daily memory files from JSONL logs."""
     # Validate mutual exclusivity
     date_flags = [target_date, backfill_all, today, since_date, incremental]
@@ -1910,7 +2098,8 @@ def backfill(target_date, backfill_all, today, since_date, incremental, dry_run,
     if summarize:
         def generate_fn(log_date, sessions_dir, output_path, force, preserve=False):
             return generate_summarized_memory(
-                log_date, sessions_dir, output_path, force=force, preserve=preserve, model=model
+                log_date, sessions_dir, output_path, force=force, preserve=preserve,
+                model=model, backend=summarize_backend
             )
     else:
         def generate_fn(log_date, sessions_dir, output_path, force, preserve=False):
@@ -2144,11 +2333,15 @@ def extract(target_date, query, model, output_format, sessions_dir):
 
 @main.command()
 @click.option("--date", "target_date", required=True, help="Date to summarize (YYYY-MM-DD)")
-@click.option("--model", default=None, help=f"Model to use for summarization (default: {DEFAULT_SUMMARIZE_MODEL})")
+@click.option("--summarize-backend", "summarize_backend",
+              type=click.Choice(['openclaw', 'openai', 'anthropic']),
+              default='openclaw',
+              help="Backend for LLM summarization (default: openclaw - uses native model)")
+@click.option("--model", default=None, help="Model override for summarization (default varies by backend)")
 @click.option("--output", default=None, help="Write to file (default: stdout)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
-def summarize(target_date, model, output, sessions_dir):
-    """Generate an LLM summary for a single day (requires anthropic)."""
+def summarize(target_date, summarize_backend, model, output, sessions_dir):
+    """Generate an LLM summary for a single day."""
     sessions_path = Path(sessions_dir) if sessions_dir else get_default_sessions_dir()
 
     if not sessions_path.exists():
@@ -2169,7 +2362,7 @@ def summarize(target_date, model, output, sessions_dir):
     try:
         generate_summarized_memory(
             log_date, sessions_path, output_path,
-            force=True, model=model
+            force=True, model=model, backend=summarize_backend
         )
 
         if using_temp_file:
