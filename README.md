@@ -41,16 +41,16 @@ This tool:
 
 ```
 openclaw-memory-sync/
-├── scripts/
-│   └── memory_sync.py      # Single-file CLI tool (all logic here)
+├── memory-sync/                # ClawHub skill folder (upload this folder)
+│   ├── memory_sync.py          # Single-file CLI tool (all logic here)
+│   └── SKILL.md                # OpenClaw skill definition (agent instructions)
 ├── tests/
-│   ├── test_memory_sync.py # Consolidated test suite
-│   ├── conftest.py         # Pytest fixtures
-│   └── fixtures/           # Test data files
+│   ├── test_memory_sync.py     # Consolidated test suite
+│   ├── conftest.py             # Pytest fixtures
+│   └── fixtures/               # Test data files
 ├── references/
-│   └── SECRET_PATTERNS.md  # Documentation of secret detection patterns
-├── SKILL.md                # OpenClaw skill definition (agent instructions)
-└── README.md               # This file
+│   └── SECRET_PATTERNS.md      # Documentation of secret detection patterns
+└── README.md                   # This file
 ```
 
 ## Installation
@@ -68,10 +68,13 @@ pip install openai
 
 ```bash
 cd ~/.openclaw/skills
-git clone git@github.com:mpesavento/openclaw-memory-sync.git memory-sync
+git clone git@github.com:mpesavento/openclaw-memory-sync.git
+
+# Or download from ClawHub and copy the memory-sync folder
+cp -r openclaw-memory-sync/memory-sync ~/.openclaw/skills/
 
 # Create an alias for convenience
-alias memory-sync="python ~/.openclaw/skills/memory-sync/scripts/memory_sync.py"
+alias memory-sync="python ~/.openclaw/skills/memory-sync/memory_sync.py"
 ```
 
 ## Quick Start
@@ -149,7 +152,7 @@ memory-sync compare --sessions-dir /path/to/sessions --memory-dir /path/to/memor
 
 ```bash
 # Run at 3am daily
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
 ```
 
 ### Incremental Mode
@@ -176,7 +179,7 @@ pytest tests/test_memory_sync.py::TestSummarizeWithOpenclaw -v
 
 ## Documentation
 
-- **[SKILL.md](SKILL.md)** - OpenClaw skill definition with detailed usage instructions for agents
+- **[memory-sync/SKILL.md](memory-sync/SKILL.md)** - OpenClaw skill definition with detailed usage instructions for agents
 - **[references/SECRET_PATTERNS.md](references/SECRET_PATTERNS.md)** - Complete documentation of secret detection patterns
 
 ## License

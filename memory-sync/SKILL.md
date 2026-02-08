@@ -27,11 +27,11 @@ pip install openai
 ## Quick Start
 
 ```bash
-# Run directly from scripts directory
-python ~/.openclaw/skills/memory-sync/scripts/memory_sync.py compare
+# Run directly from skill directory
+python ~/.openclaw/skills/memory-sync/memory_sync.py compare
 
 # Or create an alias for convenience
-alias memory-sync="python ~/.openclaw/skills/memory-sync/scripts/memory_sync.py"
+alias memory-sync="python ~/.openclaw/skills/memory-sync/memory_sync.py"
 
 # Check for gaps
 memory-sync compare
@@ -139,7 +139,7 @@ All content is automatically sanitized to prevent secret leakage:
 
 Secrets are replaced with `[REDACTED-TYPE]` placeholders.
 
-See `references/SECRET_PATTERNS.md` for complete pattern list.
+See `../references/SECRET_PATTERNS.md` for complete pattern list.
 
 ## Summarization Backends
 
@@ -179,7 +179,7 @@ The `openclaw` backend is recommended as it:
 Process today with LLM summary, preserving any existing notes:
 
 ```bash
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
 ```
 
 ### Smart Incremental Mode
@@ -188,10 +188,10 @@ Automatically detects changes since last run:
 
 ```bash
 # Initial backfill (run once, simple extraction for speed)
-python scripts/memory_sync.py backfill --all
+python memory_sync.py backfill --all
 
 # Then set up nightly incremental with LLM summaries
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python scripts/memory_sync.py backfill --incremental --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --incremental --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
 ```
 
 State is tracked in `~/.memory-sync/state.json`.
