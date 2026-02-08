@@ -139,7 +139,7 @@ All content is automatically sanitized to prevent secret leakage:
 
 Secrets are replaced with `[REDACTED-TYPE]` placeholders.
 
-See `../references/SECRET_PATTERNS.md` for complete pattern list.
+See `SECRET_PATTERNS.md` for complete pattern list.
 
 ## Summarization Backends
 

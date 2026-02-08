@@ -43,13 +43,12 @@ This tool:
 openclaw-memory-sync/
 ├── memory-sync/                # ClawHub skill folder (upload this folder)
 │   ├── memory_sync.py          # Single-file CLI tool (all logic here)
-│   └── SKILL.md                # OpenClaw skill definition (agent instructions)
+│   ├── SKILL.md                # OpenClaw skill definition (agent instructions)
+│   └── SECRET_PATTERNS.md      # Documentation of secret detection patterns
 ├── tests/
 │   ├── test_memory_sync.py     # Consolidated test suite
 │   ├── conftest.py             # Pytest fixtures
 │   └── fixtures/               # Test data files
-├── references/
-│   └── SECRET_PATTERNS.md      # Documentation of secret detection patterns
 └── README.md                   # This file
 ```
 
@@ -133,7 +132,7 @@ Supported patterns include:
 - SSH keys and certificates
 - Environment variable references
 
-See [references/SECRET_PATTERNS.md](references/SECRET_PATTERNS.md) for the complete list of 30+ detection patterns.
+See [memory-sync/SECRET_PATTERNS.md](memory-sync/SECRET_PATTERNS.md) for the complete list of 30+ detection patterns.
 
 ## Configuration
 
@@ -180,7 +179,7 @@ pytest tests/test_memory_sync.py::TestSummarizeWithOpenclaw -v
 ## Documentation
 
 - **[memory-sync/SKILL.md](memory-sync/SKILL.md)** - OpenClaw skill definition with detailed usage instructions for agents
-- **[references/SECRET_PATTERNS.md](references/SECRET_PATTERNS.md)** - Complete documentation of secret detection patterns
+- **[memory-sync/SECRET_PATTERNS.md](memory-sync/SECRET_PATTERNS.md)** - Complete documentation of secret detection patterns
 
 ## License
 
