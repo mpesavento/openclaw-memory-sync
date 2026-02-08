@@ -1,11 +1,11 @@
 ---
 name: memory-sync
 description: >
-  Scrape and analyze OpenClaw JSONL session logs to reconstruct and backfill 
-  agent memory files. Use when: (1) Memory appears incomplete after model 
-  switches, (2) Verifying memory coverage, (3) Reconstructing lost memory, 
-  (4) Automated daily memory sync via cron/heartbeat. Supports simple 
-  extraction and LLM-based narrative summaries with automatic secret 
+  Scrape and analyze OpenClaw JSONL session logs to reconstruct and backfill
+  agent memory files. Use when: (1) Memory appears incomplete after model
+  switches, (2) Verifying memory coverage, (3) Reconstructing lost memory,
+  (4) Automated daily memory sync via cron/heartbeat. Supports simple
+  extraction and LLM-based narrative summaries with automatic secret
   sanitization.
 ---
 
@@ -65,7 +65,7 @@ memory-sync backfill --all
 
 The backfill command supports two modes:
 
-**Simple Extraction (without `--summarize`):**
+**Simple Extraction (default, without `--summarize`):**
 - Fast, no LLM or API calls needed
 - Extracts topics via keyword frequency analysis
 - Identifies key user questions and assistant responses
