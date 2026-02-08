@@ -1,14 +1,14 @@
 """Consolidated tests for memory_sync single-file CLI.
 
 All tests from the original test suite, consolidated into one file
-and updated to import from scripts.memory_sync.
+and updated to import from memory-sync.memory_sync.
 """
 
 import sys
 from pathlib import Path
 
-# Add scripts directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
+# Add memory-sync directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / 'memory-sync'))
 
 import pytest
 from datetime import date, datetime, timezone, timedelta
