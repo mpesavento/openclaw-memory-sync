@@ -1600,7 +1600,7 @@ def summarize_with_openclaw(
         raise RuntimeError(
             "openclaw CLI not found. "
             "Make sure OpenClaw is installed and in your PATH, "
-            "or use --summarize-backend=anthropic or --summarize-backend=openai"
+            "or use --summarize-backend=anthropic (recommended) or --summarize-backend=openai"
         )
 
 
@@ -1801,7 +1801,7 @@ def generate_summarized_memory(
         # If openclaw backend fails, provide helpful error message
         if backend == 'openclaw':
             print(f"Warning: OpenClaw summarization failed ({e})", file=sys.stderr)
-            print("Try using --summarize-backend=anthropic or --summarize-backend=openai", file=sys.stderr)
+            print("Try using --summarize-backend=anthropic (recommended) or --summarize-backend=openai", file=sys.stderr)
         raise
     
     lines = []
@@ -2066,8 +2066,8 @@ def compare(sessions_dir, memory_dir):
 @click.option("--summarize", is_flag=True, help="Use LLM to generate narrative summaries")
 @click.option("--summarize-backend", "summarize_backend",
               type=click.Choice(['openclaw', 'openai', 'anthropic']),
-              default='openclaw',
-              help="Backend for LLM summarization (default: openclaw - uses native model)")
+              default='anthropic',
+              help="Backend for LLM summarization (default: anthropic - uses Claude models)")
 @click.option("--model", default=None, help=f"Model override for summarization (default varies by backend)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
@@ -2335,8 +2335,8 @@ def extract(target_date, query, model, output_format, sessions_dir):
 @click.option("--date", "target_date", required=True, help="Date to summarize (YYYY-MM-DD)")
 @click.option("--summarize-backend", "summarize_backend",
               type=click.Choice(['openclaw', 'openai', 'anthropic']),
-              default='openclaw',
-              help="Backend for LLM summarization (default: openclaw - uses native model)")
+              default='anthropic',
+              help="Backend for LLM summarization (default: anthropic - uses Claude models)")
 @click.option("--model", default=None, help="Model override for summarization (default varies by backend)")
 @click.option("--output", default=None, help="Write to file (default: stdout)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")

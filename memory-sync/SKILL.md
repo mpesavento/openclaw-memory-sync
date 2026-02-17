@@ -20,7 +20,7 @@ Requires Python 3.11+ and `click`:
 ```bash
 pip install click
 
-# Optional: for direct API summarization (only if not using OpenClaw backend)
+# Optional: for direct API summarization (only if not using Anthropic backend)
 pip install openai
 ```
 
@@ -39,7 +39,7 @@ memory-sync compare
 # Backfill today's memory (simple extraction - fast, no LLM)
 memory-sync backfill --today
 
-# Backfill with LLM narrative (uses OpenClaw's native model - no API key needed)
+# Backfill with LLM narrative (uses Anthropic's Claude model - requires ANTHROPIC_API_KEY)
 memory-sync backfill --today --summarize
 
 # Backfill all missing
@@ -85,6 +85,9 @@ The backfill command supports two modes:
 ```bash
 # Best quality: LLM summary that incorporates any existing notes
 memory-sync backfill --today --summarize --preserve
+
+# Or explicitly specify Anthropic backend (now the default)
+memory-sync backfill --today --summarize --preserve --summarize-backend anthropic
 ```
 
 Both modes automatically sanitize secrets before writing.
@@ -147,19 +150,19 @@ The `--summarize` flag supports multiple backends via `--summarize-backend`:
 
 | Backend | Description | API Key Required |
 |---------|-------------|------------------|
-| `openclaw` (default) | Uses OpenClaw's `sessions spawn` with your configured model | No |
-| `anthropic` | Direct Anthropic API via openai package | `ANTHROPIC_API_KEY` |
+| `anthropic` (default) | Direct Anthropic API via openai package (Claude models) | `ANTHROPIC_API_KEY` |
+| `openclaw` | Uses OpenClaw's `sessions spawn` with your configured model | No |
 | `openai` | Direct OpenAI API via openai package | `OPENAI_API_KEY` |
 
 ### Examples
 
 ```bash
-# Default: use OpenClaw's native model (no API key needed)
+# Default: use Anthropic backend (Claude models)
 memory-sync backfill --today --summarize
 
 # Explicit backend selection
-memory-sync backfill --today --summarize --summarize-backend openclaw
 memory-sync backfill --today --summarize --summarize-backend anthropic
+memory-sync backfill --today --summarize --summarize-backend openclaw
 memory-sync backfill --today --summarize --summarize-backend openai
 
 # Override model for any backend
@@ -167,10 +170,10 @@ memory-sync backfill --today --summarize --model claude-sonnet-4-20250514
 memory-sync backfill --today --summarize --summarize-backend openai --model gpt-4o
 ```
 
-The `openclaw` backend is recommended as it:
-- Uses your existing OpenClaw configuration
-- Requires no separate API keys
-- Leverages whatever model you have configured in OpenClaw
+The `anthropic` backend is now recommended as it:
+- Uses Claude models for high-quality summaries
+- Has proven more reliable than the OpenClaw backend
+- Works directly with the Anthropic API
 
 ## Automated Usage
 
@@ -207,14 +210,15 @@ State is tracked in `~/.memory-sync/state.json`.
 - `--memory-dir /path/to/memory`
 
 **Environment variables (only for direct API backends):**
-- `ANTHROPIC_API_KEY` - Required for `--summarize-backend anthropic`
+- `ANTHROPIC_API_KEY` - Required for `--summarize-backend anthropic` (now default)
 - `OPENAI_API_KEY` - Required for `--summarize-backend openai`
 
-The default `openclaw` backend requires no API keys - it uses your OpenClaw configuration.
+The default `anthropic` backend requires the ANTHROPIC_API_KEY environment variable.
 
 ```bash
-# Only needed if using direct API backends
+# Required for default anthropic backend
 export ANTHROPIC_API_KEY=sk-ant-...
+# Only needed if using openai backend
 export OPENAI_API_KEY=sk-...
 ```
 
@@ -257,7 +261,7 @@ Content after the footer marker is considered hand-written and will be preserved
 - `--force` - Overwrite existing files (required for regeneration)
 - `--preserve` - Keep hand-written content when regenerating
 - `--summarize` - Use LLM for narrative summaries
-- `--summarize-backend BACKEND` - Backend for summarization: `openclaw` (default), `anthropic`, `openai`
+- `--summarize-backend BACKEND` - Backend for summarization: `anthropic` (default), `openclaw`, `openai`
 - `--model MODEL` - Model override for summarization (default varies by backend)
 
 ## Performance
