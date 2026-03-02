@@ -25,6 +25,7 @@ import json
 import time
 from pathlib import Path
 from datetime import datetime, date, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from typing import Iterator, Optional, Tuple, List, Literal
 from collections import defaultdict
@@ -45,9 +46,12 @@ import click
 DEFAULT_SESSIONS_DIR = Path.home() / '.openclaw' / 'agents' / 'main' / 'sessions'
 DEFAULT_MEMORY_DIR = Path.home() / '.openclaw' / 'workspace' / 'memory'
 
+# Local timezone for bucketing "days" (Mike/Wren live in PST/PDT)
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
 # Thresholds for gap detection (FIXED: sparse threshold lowered to 5)
 MIN_FILE_SIZE_BYTES = 1024
-MIN_BYTES_PER_MESSAGE = 5  # Simple extraction is ~7-8 bytes/msg, so 5 is the floor
+MIN_BYTES_PER_MESSAGE = 3  # Heuristic floor; high tool-result volume can depress bytes/msg even with good summaries
 
 # Markers for identifying auto-generated content
 AUTO_GENERATED_HEADER_PATTERN = r'\*Auto-generated from \d+ session messages\*'
@@ -385,16 +389,20 @@ def validate_no_secrets(content: str) -> Tuple[bool, List[str]]:
 
 
 def safe_sanitize(content: str) -> str:
-    """Sanitize content and ensure it's valid (no secrets remain)."""
+    """Sanitize content and ensure it's valid (no secrets remain).
+
+    STRICT: if any secret patterns still match after sanitization, abort.
+    This prevents accidental writes/sends of sensitive material.
+    """
     sanitized = sanitize_content(content)
     is_valid, violations = validate_no_secrets(sanitized)
-    
+
     if not is_valid:
-        print(
-            f"Warning: Secrets still detected after sanitization: {violations}",
-            file=sys.stderr
+        raise ValueError(
+            f"Secrets still detected after sanitization: {violations}. "
+            "Refusing to proceed."
         )
-    
+
     return sanitized
 
 
@@ -494,7 +502,7 @@ def get_messages(path: Path, date_filter: Optional[date] = None) -> Iterator[Mes
 
         # Apply date filter
         if date_filter is not None:
-            if timestamp.date() != date_filter:
+            if _local_date(timestamp) != date_filter:
                 continue
 
         role = msg.get('role')
@@ -627,14 +635,24 @@ def find_session_files(sessions_dir: Path) -> list[Path]:
     return files
 
 
+def _local_date(dt: datetime) -> date:
+    """Convert a datetime to the local (America/Los_Angeles) date for bucketing."""
+    try:
+        if dt.tzinfo is not None:
+            return dt.astimezone(LOCAL_TZ).date()
+    except Exception:
+        pass
+    return dt.date()
+
+
 def get_date_range(sessions_dir: Path) -> tuple[Optional[date], Optional[date]]:
-    """Get the date range of activity across all session files."""
+    """Get the date range of activity across all session files (bucketed by LOCAL_TZ)."""
     first_date: Optional[date] = None
     last_date: Optional[date] = None
 
     for session_file in find_session_files(sessions_dir):
         for msg in get_messages(session_file):
-            msg_date = msg.timestamp.date()
+            msg_date = _local_date(msg.timestamp)
 
             if first_date is None or msg_date < first_date:
                 first_date = msg_date
@@ -663,7 +681,7 @@ def collect_daily_activity(sessions_dir: Path) -> dict[date, DayActivity]:
         session_id = session_meta.get('id', session_file.stem) if session_meta else session_file.stem
 
         for msg in get_messages(session_file):
-            msg_date = msg.timestamp.date()
+            msg_date = _local_date(msg.timestamp)
             data = daily_data[msg_date]
 
             data['message_count'] += 1
@@ -679,7 +697,7 @@ def collect_daily_activity(sessions_dir: Path) -> dict[date, DayActivity]:
                 data['tool_result_messages'] += 1
 
         for transition in get_model_transitions(session_file):
-            trans_date = transition.timestamp.date()
+            trans_date = _local_date(transition.timestamp)
             daily_data[trans_date]['transitions'].append(transition)
 
     result: dict[date, DayActivity] = {}
@@ -715,7 +733,7 @@ def get_session_info(session_file: Path) -> dict:
 
     for msg in get_messages(session_file):
         message_count += 1
-        msg_date = msg.timestamp.date()
+        msg_date = _local_date(msg.timestamp)
 
         if first_date is None or msg_date < first_date:
             first_date = msg_date
@@ -810,7 +828,7 @@ def get_changed_days(sessions_dir: Path, since: datetime) -> set[date]:
         
         if file_mtime > since_timestamp:
             for msg in get_messages(session_file):
-                changed_days.add(msg.timestamp.date())
+                changed_days.add(_local_date(msg.timestamp))
     
     return changed_days
 
@@ -833,8 +851,12 @@ def get_last_run_datetime() -> Optional[datetime]:
 # COMPARE (gap detection)
 # =============================================================================
 
-def find_gaps(sessions_dir: Path, memory_dir: Path) -> dict:
-    """Compare session logs against memory files to identify coverage gaps."""
+def find_gaps(sessions_dir: Path, memory_dir: Path, *, exclude_today: bool = True) -> dict:
+    """Compare session logs against memory files to identify coverage gaps.
+
+    By default, excludes *today* from coverage/sparsity checks because the day is usually still in progress
+    (especially when this is run early morning by cron).
+    """
     first_date, last_date = get_date_range(sessions_dir)
 
     if first_date is None or last_date is None:
@@ -853,8 +875,14 @@ def find_gaps(sessions_dir: Path, memory_dir: Path) -> dict:
     sparse_gaps: list[MemoryGap] = []
     covered_days = 0
 
+    today_local = datetime.now(tz=LOCAL_TZ).date()
+
     for day, activity in sorted(daily_activity.items()):
         if activity.message_count == 0:
+            continue
+
+        # Skip "today" unless explicitly included; partial-day logs make the sparse heuristic noisy.
+        if exclude_today and day == today_local:
             continue
 
         memory_file = memory_dir / f"{day}.md"
@@ -977,7 +1005,7 @@ def extract_transitions(
 
     for session_file in find_session_files(sessions_dir):
         for transition in get_model_transitions(session_file):
-            if since is not None and transition.timestamp.date() < since:
+            if since is not None and _local_date(transition.timestamp) < since:
                 continue
             all_transitions.append(transition)
 
@@ -1044,7 +1072,7 @@ def format_transitions_report(
 
     by_date: dict[date, list[ModelTransition]] = {}
     for t in transitions:
-        d = t.timestamp.date()
+        d = _local_date(t.timestamp)
         if d not in by_date:
             by_date[d] = []
         by_date[d].append(t)
@@ -1092,7 +1120,7 @@ def get_transition_stats(transitions: list[ModelTransition]) -> dict:
             providers.add(t.provider)
             provider_counts[t.provider] = provider_counts.get(t.provider, 0) + 1
 
-        trans_date = t.timestamp.date()
+        trans_date = _local_date(t.timestamp)
         if first_date is None or trans_date < first_date:
             first_date = trans_date
         if last_date is None or trans_date > last_date:
@@ -1342,11 +1370,11 @@ def generate_daily_memory(
             messages.append(msg)
 
         for trans in get_model_transitions(session_file):
-            if trans.timestamp.date() == log_date:
+            if _local_date(trans.timestamp) == log_date:
                 transitions.append(trans)
 
         for comp in get_compactions(session_file):
-            if comp['timestamp'] and comp['timestamp'].date() == log_date:
+            if comp['timestamp'] and _local_date(comp['timestamp']) == log_date:
                 if comp.get('summary'):
                     compaction_summary = comp['summary']
 
@@ -1457,28 +1485,31 @@ def backfill_all_missing(
 # =============================================================================
 
 # LLM system prompt for memory generation
-MEMORY_SYSTEM_PROMPT = """You are a memory synthesizer for an AI coding assistant. Your task is to generate concise, valuable daily memory summaries from conversation logs.
+MEMORY_SYSTEM_PROMPT = """You are a memory synthesizer for an AI assistant. Your task is to generate *high-signal, detailed* daily memory summaries from conversation logs.
 
 Key principles:
-- Focus on WHAT was accomplished and WHY decisions were made
-- Highlight insights, patterns, and context that would be valuable later
-- Omit routine exchanges unless they reveal important context
-- Write in past tense, narrative style
-- Keep it concise (200-400 words)
+- Focus on WHAT happened and WHY (decisions, intent, constraints, tradeoffs)
+- Capture decisions, changes, and outcomes (especially anything that would be hard to reconstruct later)
+- Prefer concrete facts: what files changed, what jobs ran/failed, what was decided, what’s blocked
+- Include enough detail that a future session can pick up the thread without rereading logs
+- Write in past tense. Be clear and structured.
+
+Length guidance:
+- Default target: ~800–1500 words when there were substantial tool calls / long sessions.
+- If the day was light, shorter is fine — but don’t force brevity.
 
 Structure:
-1. Brief overview (2-3 sentences)
-2. Key accomplishments/decisions (bullet points)
-3. Notable insights or patterns
-4. Open questions or follow-ups (if any)
+1) Overview (2–5 sentences)
+2) Key accomplishments / decisions (bulleted; include *why* it mattered)
+3) Notable findings / insights / patterns
+4) Operational notes (auth issues, cron/tooling failures, environment changes)
+5) Open loops / next actions (bulleted, actionable)
 
 Do NOT include:
-- Verbatim conversation logs
-- Routine "how to" exchanges
-- Implementation details already captured in code
-- Generic AI assistant responses
+- Long verbatim logs (short quotes only if they capture a key decision)
+- Secrets, credentials, tokens, raw personal data (PII)
 
-Your output should read like a journal entry written by the AI assistant reflecting on the day's work."""
+Your output should read like a pragmatic journal entry written by the assistant for its future self."""
 
 
 def prepare_conversation_text(messages: list[Message], max_chars: int = 100000) -> str:
@@ -1537,7 +1568,13 @@ Conversation log:
 {conversation_text}
 {transitions_note}
 
-Remember: Focus on accomplishments, decisions, insights, and context. Be concise and narrative."""
+Requirements:
+- Be *detailed* and high-signal (this is the canonical record for the day).
+- Extract concrete decisions, outcomes, and operational changes.
+- If there were many messages/tool calls, include a richer bullet list and a short “what changed” section.
+- Do NOT include secrets or raw PII.
+
+Write in clear narrative + structured bullets."""
     
     if existing_content:
         _, hand_written = extract_preserved_content(existing_content)
@@ -1651,7 +1688,7 @@ def summarize_with_openai_package(
             {"role": "system", "content": MEMORY_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
         ],
-        max_tokens=2000,
+        max_tokens=3500,
         temperature=0.3
     )
     
@@ -1722,7 +1759,13 @@ Conversation log:
 {conversation_text}
 {transitions_note}
 
-Remember: Focus on accomplishments, decisions, insights, and context. Be concise and narrative."""
+Requirements:
+- Be *detailed* and high-signal (this is the canonical record for the day).
+- Extract concrete decisions, outcomes, and operational changes.
+- If there were many messages/tool calls, include a richer bullet list and a short “what changed” section.
+- Do NOT include secrets or raw PII.
+
+Write in clear narrative + structured bullets."""
     
     if existing_content:
         _, hand_written = extract_preserved_content(existing_content)
@@ -1731,7 +1774,7 @@ Remember: Focus on accomplishments, decisions, insights, and context. Be concise
     
     response = client.messages.create(
         model=model,
-        max_tokens=2000,
+        max_tokens=3500,
         system=MEMORY_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
@@ -1779,7 +1822,7 @@ def generate_summarized_memory(
             messages.append(msg)
         
         for trans in get_model_transitions(session_file):
-            if trans.timestamp.date() == log_date:
+            if _local_date(trans.timestamp) == log_date:
                 transitions.append(trans)
     
     if not messages:
@@ -2031,7 +2074,8 @@ def main():
 @main.command()
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
-def compare(sessions_dir, memory_dir):
+@click.option("--include-today", is_flag=True, help="Include today's partial logs in coverage/sparsity checks")
+def compare(sessions_dir, memory_dir, include_today):
     """Compare JSONL logs against memory files, identify gaps."""
     sessions_path = Path(sessions_dir) if sessions_dir else get_default_sessions_dir()
     memory_path = Path(memory_dir) if memory_dir else get_default_memory_dir()
@@ -2049,7 +2093,7 @@ def compare(sessions_dir, memory_dir):
     click.echo(f"Memory: {memory_path}")
     click.echo("")
 
-    gaps = find_gaps(sessions_path, memory_path)
+    gaps = find_gaps(sessions_path, memory_path, exclude_today=not include_today)
     report = format_gap_report(gaps)
     click.echo(report)
 
@@ -2059,6 +2103,7 @@ def compare(sessions_dir, memory_dir):
 @click.option("--all", "backfill_all", is_flag=True, help="Backfill all missing dates")
 @click.option("--today", "today", is_flag=True, help="Backfill only today's date (local timezone)")
 @click.option("--since", "since_date", default=None, help="Backfill from date to present (YYYY-MM-DD)")
+@click.option("--until", "until_date", default=None, help="End date for backfill (YYYY-MM-DD), exclusive (use with --since or --incremental)")
 @click.option("--incremental", "incremental", is_flag=True, help="Backfill only dates changed since last run")
 @click.option("--dry-run", is_flag=True, help="Show what would be created")
 @click.option("--force", is_flag=True, help="Overwrite existing files")
@@ -2071,7 +2116,7 @@ def compare(sessions_dir, memory_dir):
 @click.option("--model", default=None, help=f"Model override for summarization (default varies by backend)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
-def backfill(target_date, backfill_all, today, since_date, incremental, dry_run, force, preserve, summarize, summarize_backend, model, sessions_dir, memory_dir):
+def backfill(target_date, backfill_all, today, since_date, until_date, incremental, dry_run, force, preserve, summarize, summarize_backend, model, sessions_dir, memory_dir):
     """Generate missing daily memory files from JSONL logs."""
     # Validate mutual exclusivity
     date_flags = [target_date, backfill_all, today, since_date, incremental]
@@ -2121,10 +2166,13 @@ def backfill(target_date, backfill_all, today, since_date, incremental, dry_run,
         
     elif since_date:
         from_date = parse_date_str(since_date)
-        to_date = datetime.now().date()
+        to_date = parse_date_str(until_date) if until_date else datetime.now().date()
+        # until_date is exclusive, so subtract 1 day if specified
+        if until_date:
+            to_date = to_date - timedelta(days=1)
         
         if from_date > to_date:
-            click.echo(f"Error: --since date {from_date} is in the future", err=True)
+            click.echo(f"Error: --since date {from_date} is {'in the future' if not until_date else f'after --until date {until_date}'}", err=True)
             sys.exit(1)
         
         current = from_date
@@ -2132,7 +2180,8 @@ def backfill(target_date, backfill_all, today, since_date, incremental, dry_run,
             dates_to_process.append(current)
             current += timedelta(days=1)
         
-        click.echo(f"Processing dates from {from_date} to {to_date} ({len(dates_to_process)} days)")
+        until_msg = f" (until {until_date}, exclusive)" if until_date else ""
+        click.echo(f"Processing dates from {from_date} to {to_date}{until_msg} ({len(dates_to_process)} days)")
         
     elif incremental:
         last_run = get_last_run_datetime()
@@ -2148,6 +2197,14 @@ def backfill(target_date, backfill_all, today, since_date, incremental, dry_run,
             click.echo(f"Found {len(dates_to_process)} days with changes since {last_run.strftime('%Y-%m-%d %H:%M')}")
         else:
             click.echo(f"No changes since last run at {last_run.strftime('%Y-%m-%d %H:%M')}")
+    
+    # Apply until_date filter if specified
+    if until_date and dates_to_process:
+        until = parse_date_str(until_date)
+        original_count = len(dates_to_process)
+        dates_to_process = [d for d in dates_to_process if d < until]
+        if len(dates_to_process) < original_count:
+            click.echo(f"Filtered to dates before {until}: {len(dates_to_process)} days (excluded {original_count - len(dates_to_process)})")
     
     # Process specific dates
     if dates_to_process and not backfill_all:
@@ -2500,7 +2557,7 @@ def stats(sessions_dir, memory_dir):
             click.echo(f"  Date range: {first_mem} to {last_mem}")
 
         if sessions_path.exists():
-            gaps = find_gaps(sessions_path, memory_path)
+            gaps = find_gaps(sessions_path, memory_path, exclude_today=True)
             click.echo(f"  Coverage: {gaps['coverage_pct']:.1f}%")
             click.echo(f"    Active days: {gaps['total_active_days']}")
             click.echo(f"    Covered days: {gaps.get('covered_days', 0)}")
