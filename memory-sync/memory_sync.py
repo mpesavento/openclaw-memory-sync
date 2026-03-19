@@ -1608,37 +1608,95 @@ def summarize_with_openclaw(
 
 {user_prompt}"""
     
-    cmd = [
-        "openclaw", "sessions", "spawn",
-        "--task", full_prompt,
-        "--cleanup", "delete",
-        "--timeout", "120"
-    ]
+    # Use OpenClaw CLI to run an agent turn via the gateway
+    import json
+    import tempfile
     
-    if model:
-        cmd.extend(["--model", model])
+    # Write prompt to a temp file to avoid shell escaping issues with large prompts
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(full_prompt)
+        prompt_file = f.name
     
     try:
+        # Build the openclaw agent command
+        # Use --local for direct execution without delivery, --json for structured output
+        cmd = [
+            "openclaw", "agent",
+            "--message", f"$(cat {prompt_file})",
+            "--json",
+            "--timeout", "300"
+        ]
+        
+        # Use openclaw agent with a unique session ID to avoid locking the main session
+        import time
+        session_id = f"memory-sync-{int(time.time())}"
+        cmd = [
+            "openclaw", "agent",
+            "--session-id", session_id,
+            "--message", full_prompt,
+            "--json",
+            "--timeout", "300"
+        ]
+        
         result = subprocess.run(
-            cmd, 
-            capture_output=True, 
-            text=True, 
-            timeout=180,
-            env={**os.environ}  # Inherit environment
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=360,
+            env={**os.environ}
         )
+        
         if result.returncode == 0:
-            # sessions_spawn returns the agent's response
-            return sanitize_content(result.stdout.strip())
+            # Parse JSON output to extract the agent's response
+            try:
+                output = json.loads(result.stdout)
+                # The output structure: {status, result: {payloads: [{text: "..."}]}}
+                if isinstance(output, dict):
+                    # Primary path: result.payloads[0].text
+                    if 'result' in output and isinstance(output['result'], dict):
+                        payloads = output['result'].get('payloads', [])
+                        if payloads and isinstance(payloads, list) and len(payloads) > 0:
+                            text = payloads[0].get('text', '')
+                            if text:
+                                return sanitize_content(text.strip())
+                    # Fallback: try 'message' key
+                    if 'message' in output:
+                        msg = output['message']
+                        if isinstance(msg, dict) and 'content' in msg:
+                            content = msg['content']
+                            if isinstance(content, list) and len(content) > 0:
+                                text = content[0].get('text', '')
+                                return sanitize_content(text.strip())
+                            elif isinstance(content, str):
+                                return sanitize_content(content.strip())
+                    # Try 'response' or 'text' keys
+                    if 'response' in output:
+                        return sanitize_content(str(output['response']).strip())
+                    if 'text' in output:
+                        return sanitize_content(str(output['text']).strip())
+                # Fallback: return the raw stdout if it looks like text
+                raise RuntimeError(f"Could not parse OpenClaw response: {result.stdout[:500]}")
+            except json.JSONDecodeError:
+                # Not JSON - maybe plain text response
+                if result.stdout.strip():
+                    return sanitize_content(result.stdout.strip())
+                raise RuntimeError(f"OpenClaw returned non-JSON output: {result.stdout[:200]}")
         else:
-            raise RuntimeError(f"sessions_spawn failed: {result.stderr}")
+            raise RuntimeError(f"openclaw agent failed: {result.stderr or result.stdout}")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("OpenClaw summarization timed out after 180 seconds")
+        raise RuntimeError("OpenClaw summarization timed out after 360 seconds")
     except FileNotFoundError:
         raise RuntimeError(
             "openclaw CLI not found. "
             "Make sure OpenClaw is installed and in your PATH, "
-            "or use --summarize-backend=anthropic (recommended) or --summarize-backend=openai"
+            "or use --summarize-backend=anthropic or --summarize-backend=openai"
         )
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(prompt_file)
+        except:
+            pass
 
 
 def summarize_with_openai_package(
@@ -2111,8 +2169,8 @@ def compare(sessions_dir, memory_dir, include_today):
 @click.option("--summarize", is_flag=True, help="Use LLM to generate narrative summaries")
 @click.option("--summarize-backend", "summarize_backend",
               type=click.Choice(['openclaw', 'openai', 'anthropic']),
-              default='anthropic',
-              help="Backend for LLM summarization (default: anthropic - uses Claude models)")
+              default='openclaw',
+              help="Backend for LLM summarization (default: openclaw - uses your gateway's configured models)")
 @click.option("--model", default=None, help=f"Model override for summarization (default varies by backend)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
@@ -2392,8 +2450,8 @@ def extract(target_date, query, model, output_format, sessions_dir):
 @click.option("--date", "target_date", required=True, help="Date to summarize (YYYY-MM-DD)")
 @click.option("--summarize-backend", "summarize_backend",
               type=click.Choice(['openclaw', 'openai', 'anthropic']),
-              default='anthropic',
-              help="Backend for LLM summarization (default: anthropic - uses Claude models)")
+              default='openclaw',
+              help="Backend for LLM summarization (default: openclaw - uses your gateway's configured models)")
 @click.option("--model", default=None, help="Model override for summarization (default varies by backend)")
 @click.option("--output", default=None, help="Write to file (default: stdout)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
