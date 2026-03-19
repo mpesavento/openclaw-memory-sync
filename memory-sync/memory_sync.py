@@ -61,7 +61,7 @@ AUTO_GENERATED_FOOTER = '*Review and edit this draft to capture what\'s actually
 MIN_VALID_SIZE = 100  # bytes - minimum size for a memory file to be considered non-empty
 
 # Default LLM model for summarization
-DEFAULT_SUMMARIZE_MODEL = "claude-sonnet-4-20250514"
+DEFAULT_SUMMARIZE_MODEL = "claude-sonnet-4-5"
 
 # Rate limiting for batch LLM calls (seconds between requests)
 LLM_BATCH_DELAY_SECONDS = 1.0
@@ -1662,7 +1662,7 @@ def summarize_with_openai_package(
     if provider == "anthropic":
         api_key = os.environ.get('ANTHROPIC_API_KEY')
         base_url = "https://api.anthropic.com/v1"
-        default_model = "claude-sonnet-4-20250514"
+        default_model = "claude-sonnet-4-5"
         if not api_key:
             raise ValueError(
                 "ANTHROPIC_API_KEY not set. "
@@ -1705,7 +1705,7 @@ def get_summarizer(backend: str):
         return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="openai")
     
     def anthropic_summarizer(log_date, messages, transitions, existing_content=None, model=None):
-        return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="anthropic")
+        return summarize_with_anthropic(log_date, messages, transitions, existing_content, model)
     
     backends = {
         'openclaw': openclaw_summarizer,
