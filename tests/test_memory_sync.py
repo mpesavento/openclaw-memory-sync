@@ -55,6 +55,10 @@ from memory_sync import (
     render_daily_template,
     extract_preserved_content,
     AUTO_GENERATED_FOOTER,
+    # v2.0 features
+    strip_telegram_envelope,
+    prepare_conversation_text_full,
+    chunk_messages_by_size,
     # Summarization
     get_summarizer,
     summarize_with_openclaw,
@@ -1291,3 +1295,211 @@ class TestStatsCommand:
 
         assert result.exit_code == 0
         assert 'Statistics' in result.output or 'Session' in result.output
+
+
+# =============================================================================
+# v2.0 FEATURE TESTS
+# =============================================================================
+
+class TestStripTelegramEnvelope:
+    """Test Telegram envelope stripping."""
+    
+    def test_strips_full_envelope(self):
+        """Test stripping complete Telegram metadata envelope."""
+        from memory_sync import strip_telegram_envelope
+        
+        text = '''Conversation info (untrusted metadata):
+```json
+{
+  "message_id": "4502",
+  "sender_id": "1361736939",
+  "sender": "Mike Pesavento",
+  "timestamp": "Thu 2026-03-19 22:59 PDT"
+}
+```
+
+Sender (untrusted metadata):
+```json
+{
+  "label": "Mike Pesavento (1361736939)",
+  "id": "1361736939",
+  "name": "Mike Pesavento",
+  "username": "mike_pez"
+}
+```
+
+Tell me more about this tweet'''
+        
+        result = strip_telegram_envelope(text)
+        assert result == "Tell me more about this tweet"
+    
+    def test_returns_original_if_no_envelope(self):
+        """Test that non-enveloped text is returned unchanged."""
+        from memory_sync import strip_telegram_envelope
+        
+        text = "Just a plain message without any envelope"
+        result = strip_telegram_envelope(text)
+        assert result == text
+    
+    def test_handles_multiline_content(self):
+        """Test extraction of multiline content after envelope."""
+        from memory_sync import strip_telegram_envelope
+        
+        text = '''Conversation info (untrusted metadata):
+```json
+{"message_id": "123"}
+```
+
+Sender (untrusted metadata):
+```json
+{"name": "User"}
+```
+
+Line one of the message.
+Line two of the message.
+Line three.'''
+        
+        result = strip_telegram_envelope(text)
+        assert "Line one" in result
+        assert "Line three" in result
+
+
+class TestChunkMessagesBySize:
+    """Test size-based message chunking."""
+    
+    def test_single_chunk_for_small_messages(self):
+        """Test that small message sets stay in one chunk."""
+        from memory_sync import chunk_messages_by_size, Message
+        
+        messages = [
+            Message(id="1", timestamp=datetime.now(timezone.utc), role="user", 
+                   text_content="Short message 1"),
+            Message(id="2", timestamp=datetime.now(timezone.utc), role="assistant",
+                   text_content="Short response"),
+        ]
+        
+        chunks = chunk_messages_by_size(messages, max_chunk_chars=10000)
+        assert len(chunks) == 1
+        assert len(chunks[0]) == 2
+    
+    def test_splits_large_content(self):
+        """Test that large content is split into multiple chunks."""
+        from memory_sync import chunk_messages_by_size, Message
+        
+        # Create messages that exceed chunk size (use realistic content that won't be sanitized away)
+        messages = [
+            Message(id=str(i), timestamp=datetime.now(timezone.utc), role="user",
+                   text_content="This is a realistic message with some normal words. " * 100)  # ~5k chars each
+            for i in range(10)
+        ]
+        
+        # With 10k max, should need multiple chunks
+        chunks = chunk_messages_by_size(messages, max_chunk_chars=10000)
+        assert len(chunks) > 1
+    
+    def test_truncates_oversized_single_message(self):
+        """Test that individual messages over max_single_msg_chars are truncated."""
+        from memory_sync import chunk_messages_by_size, Message
+        
+        # Use realistic content that won't be sanitized away
+        huge_content = "This is a very long API response with lots of JSON data and details. " * 1000  # ~70k chars
+        messages = [
+            Message(id="1", timestamp=datetime.now(timezone.utc), role="assistant",
+                   text_content=huge_content)
+        ]
+        
+        chunks = chunk_messages_by_size(messages, max_chunk_chars=60000, max_single_msg_chars=15000)
+        
+        # Should have one chunk with truncated message
+        assert len(chunks) == 1
+        # The message content should be truncated (less than original ~70k)
+        assert len(chunks[0][0].text_content) < 70000
+        assert "TRUNCATED" in chunks[0][0].text_content
+    
+    def test_preserves_chronological_order(self):
+        """Test that messages remain in chronological order within chunks."""
+        from memory_sync import chunk_messages_by_size, Message
+        
+        base_time = datetime.now(timezone.utc)
+        messages = [
+            Message(id=str(i), timestamp=base_time + timedelta(minutes=i), role="user",
+                   text_content=f"Message {i}")
+            for i in range(5)
+        ]
+        
+        chunks = chunk_messages_by_size(messages, max_chunk_chars=100000)
+        
+        # Check order is preserved
+        all_messages = [m for chunk in chunks for m in chunk]
+        for i in range(len(all_messages) - 1):
+            assert all_messages[i].timestamp <= all_messages[i+1].timestamp
+
+
+class TestPrepareConversationTextFull:
+    """Test full conversation text preparation without truncation."""
+    
+    def test_separates_user_and_assistant(self):
+        """Test that user and assistant messages are separated."""
+        from memory_sync import prepare_conversation_text_full, Message
+        
+        messages = [
+            Message(id="1", timestamp=datetime.now(timezone.utc), role="user",
+                   text_content="User question"),
+            Message(id="2", timestamp=datetime.now(timezone.utc), role="assistant",
+                   text_content="Assistant response"),
+        ]
+        
+        user_section, assistant_section = prepare_conversation_text_full(messages)
+        
+        assert "User question" in user_section
+        assert "Assistant response" in assistant_section
+    
+    def test_filters_cron_messages(self):
+        """Test that cron job messages are filtered out."""
+        from memory_sync import prepare_conversation_text_full, Message
+        
+        messages = [
+            Message(id="1", timestamp=datetime.now(timezone.utc), role="user",
+                   text_content="[cron:abc123] Some cron task"),
+            Message(id="2", timestamp=datetime.now(timezone.utc), role="user",
+                   text_content="Real user message"),
+        ]
+        
+        user_section, assistant_section = prepare_conversation_text_full(messages)
+        
+        assert "Real user message" in user_section
+        # Cron messages should be filtered from user section
+        assert "[cron:" not in user_section
+
+
+class TestFindSessionFilesWithResetDeleted:
+    """Test that find_session_files includes .reset and .deleted files."""
+    
+    def test_finds_reset_files(self, tmp_path):
+        """Test that .jsonl.reset.* files are found."""
+        from memory_sync import find_session_files
+        
+        # Create test files
+        (tmp_path / "session1.jsonl").write_text('{"type":"test"}')
+        (tmp_path / "session2.jsonl.reset.2026-03-20").write_text('{"type":"reset"}')
+        (tmp_path / "session3.jsonl.deleted.2026-03-20").write_text('{"type":"deleted"}')
+        
+        files = find_session_files(tmp_path)
+        filenames = [f.name for f in files]
+        
+        assert "session1.jsonl" in filenames
+        assert "session2.jsonl.reset.2026-03-20" in filenames
+        assert "session3.jsonl.deleted.2026-03-20" in filenames
+    
+    def test_excludes_lock_files(self, tmp_path):
+        """Test that lock files are still excluded."""
+        from memory_sync import find_session_files
+        
+        (tmp_path / "session1.jsonl").write_text('{"type":"test"}')
+        (tmp_path / "session1.jsonl.lock").write_text('')
+        
+        files = find_session_files(tmp_path)
+        filenames = [f.name for f in files]
+        
+        assert "session1.jsonl" in filenames
+        assert "session1.jsonl.lock" not in filenames
