@@ -2,6 +2,15 @@
 
 Tool for maintaining agent memory continuity across model switches.
 
+## v2.0 Improvements (March 2026)
+
+- **OpenClaw Backend Default** - Uses `openclaw agent` CLI, no external API keys needed
+- **Scans Reset/Deleted Files** - Finds `*.jsonl.reset.*` and `*.jsonl.deleted.*` sessions moved during compaction
+- **User Conversation Priority** - LLM summaries prioritize USER messages over cron/automated activity
+- **Telegram Envelope Stripping** - Extracts actual message content from channel metadata wrappers
+- **Chunked Parallel Summarization** - Large days (>80k chars) split into 60k chunks, 3 parallel workers
+- **Tool Result Truncation** - Large API dumps (Notion JSON, web fetches) capped at 15k chars
+
 ## The Problem
 
 OpenClaw agents maintain continuity through memory files (`memory/YYYY-MM-DD.md`, `MEMORY.md`). But there's a critical failure mode:
@@ -115,11 +124,22 @@ memory-sync backfill --all
 - Generates coherent narrative summaries
 - Uses OpenClaw's native model by default (no API key needed)
 - Alternative backends: `--summarize-backend anthropic` or `--summarize-backend openai`
+- **User conversations prioritized** - Summaries start with "User Conversations & Decisions" section
+- **Large days auto-chunked** - Days >80k chars split into 60k chunks, processed in parallel
 
 **Recommended for daily use:**
 ```bash
 memory-sync backfill --today --summarize --preserve
 ```
+
+## Performance
+
+| Day Size | Time | Notes |
+|----------|------|-------|
+| Light (<100 msgs) | 30-60 sec | Single LLM call |
+| Normal (100-500 msgs) | 1-2 min | Single LLM call |
+| Heavy (500+ msgs) | 5-10 min | Chunked parallel (3 workers) |
+| Very heavy (1000+ msgs) | 10-15 min | 15+ chunks |
 
 ## Secret Sanitization
 
