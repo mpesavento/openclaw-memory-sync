@@ -160,13 +160,13 @@ SECRET_PATTERNS = [
     # ==========================================================================
     # EXPLICIT KEY PATTERNS (Specific formats first)
     # ==========================================================================
-    
+
     # --- LLM Providers ---
     (r'sk-(?:proj-)?[a-zA-Z0-9]{30,}', 'OPENAI-API-KEY'),
     (r'sk-ant-[a-zA-Z0-9\-_]{32,}', 'ANTHROPIC-API-KEY'),
     (r'sk-or-[a-zA-Z0-9]{32,}', 'OPENROUTER-API-KEY'),
     (r'ak-[a-zA-Z0-9]{20,}', 'COMPOSIO-API-KEY'),
-    
+
     # --- GitHub / Git ---
     (r'ghp_[A-Za-z0-9]{32,40}', 'GITHUB-TOKEN'),
     (r'gho_[A-Za-z0-9]{32,40}', 'GITHUB-TOKEN'),
@@ -175,38 +175,38 @@ SECRET_PATTERNS = [
     (r'ghr_[A-Za-z0-9]{32,40}', 'GITHUB-TOKEN'),
     (r'gh[pousr]_[A-Za-z0-9]{20,}', 'GITHUB-TOKEN'),
     (r'github_pat_[A-Za-z0-9_]{22,}', 'GITHUB-PAT'),
-    
+
     # --- AWS ---
     (r'AKIA[A-Z0-9]{16}', 'AWS-ACCESS-KEY'),
     (r'ASIA[A-Z0-9]{16}', 'AWS-SESSION-KEY'),
-    
+
     # --- Communication / Channels ---
     (r'\d{9,10}:[A-Za-z0-9_-]{35}', 'TELEGRAM-BOT-TOKEN'),
     (r'[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}', 'DISCORD-BOT-TOKEN'),
     (r'xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*', 'SLACK-TOKEN'),
-    
+
     # --- Productivity / Integrations ---
     (r'secret_[A-Za-z0-9]{32,}', 'NOTION-SECRET'),
     (r'AIza[0-9A-Za-z_-]{35}', 'GOOGLE-API-KEY'),
-    
+
     # --- Payment ---
     (r'sk_live_[0-9a-zA-Z]{24,}', 'STRIPE-LIVE-KEY'),
     (r'sk_test_[0-9a-zA-Z]{24,}', 'STRIPE-TEST-KEY'),
     (r'pk_live_[0-9a-zA-Z]{24,}', 'STRIPE-PUBLISHABLE-KEY'),
     (r'pk_test_[0-9a-zA-Z]{24,}', 'STRIPE-TEST-PUBLISHABLE-KEY'),
-    
+
     # --- Search / Data ---
     (r'BSA[0-9a-zA-Z_-]{32,}', 'BRAVE-API-KEY'),
     (r'tvly-[A-Za-z0-9]{32,}', 'TAVILY-API-KEY'),
     (r'serp-[0-9a-z]{32,}', 'SERPAPI-KEY'),
-    
+
     # NOTE: UUID pattern removed - too aggressive, matches session IDs and message IDs
     # NOTE: HEX-32 pattern removed - matches git commit hashes and MD5 checksums
-    
+
     # ==========================================================================
     # STRUCTURAL PATTERNS (Format-based detection)
     # ==========================================================================
-    
+
     (r'eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}', 'JWT'),
     (r'-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----', 'SSH-PRIVATE-KEY'),
     (r'ssh-(?:rsa|dss|ed25519|ecdsa)\s+[A-Za-z0-9+/]{30,}={0,3}', 'SSH-PUBLIC-KEY'),
@@ -215,11 +215,11 @@ SECRET_PATTERNS = [
     (r'\b[0-9a-f]{64}\b', 'HEX-TOKEN-64'),
     # HEX-32 removed: (r'\b[0-9a-f]{32}\b', 'HEX-TOKEN-32') - matches git hashes
     (r'\b[A-Za-z0-9+/]{40,}={0,2}\b', 'BASE64'),
-    
+
     # ==========================================================================
     # GENERIC PATTERNS (Catch-all)
     # ==========================================================================
-    
+
     (r'(?i)(\w*api\w*[_-]?\w*key\w*)\s*[=:]\s*["\']?(?!\[REDACTED)([^\s"\'\n\[]{16,})["\']?', 'API-KEY'),
     (r'(?i)(\w*secret\w*[_-]?\w*key\w*)\s*[=:]\s*["\']?(?!\[REDACTED)([^\s"\'\n\[]{16,})["\']?', 'SECRET'),
     (r'(?i)(\w*access\w*[_-]?\w*token\w*)\s*[=:]\s*["\']?(?!\[REDACTED)([^\s"\'\n\[]{16,})["\']?', 'ACCESS-TOKEN'),
@@ -271,11 +271,11 @@ def classify_content(content: str) -> ContentSensitivity:
         r'eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}',
         r'gh[pousr]_[A-Za-z0-9]{20,}',
     ]
-    
+
     for pattern in definite_secret_patterns:
         if re.search(pattern, content):
             return ContentSensitivity.SECRET
-    
+
     sensitive_patterns = [
         r'\$[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)',
         r'(?i)\bapi[_-]?key\b',
@@ -283,21 +283,21 @@ def classify_content(content: str) -> ContentSensitivity:
         r'(?i)\btoken\b',
         r'(?i)\bsecret\b',
     ]
-    
+
     sensitive_count = sum(
         1 for pattern in sensitive_patterns
         if re.search(pattern, content, re.IGNORECASE)
     )
-    
+
     if sensitive_count > 0:
         return ContentSensitivity.SENSITIVE
-    
+
     return ContentSensitivity.SAFE
 
 
 def _make_context_replacer(pattern: str, redaction_type: str):
     """Factory function to create a replacement function with proper closure capture.
-    
+
     This avoids the closure variable capture bug where loop variables are
     captured by reference rather than value.
     """
@@ -314,12 +314,12 @@ def _make_context_replacer(pattern: str, redaction_type: str):
 
 def sanitize_content(content: str) -> str:
     """Remove all potentially sensitive content before processing.
-    
+
     Replaces detected secrets with [REDACTED-TYPE] placeholders.
     This function is idempotent.
     """
     sanitized = content
-    
+
     for pattern, redaction_type in SECRET_PATTERNS:
         if '(' in pattern and ')' in pattern:
             if any(kw in pattern for kw in ['api', 'secret', 'password', 'token', 'bearer']):
@@ -329,62 +329,62 @@ def sanitize_content(content: str) -> str:
                 sanitized = re.sub(pattern, f"[REDACTED-{redaction_type}]", sanitized)
         else:
             sanitized = re.sub(pattern, f"[REDACTED-{redaction_type}]", sanitized)
-    
+
     return sanitized
 
 
 def validate_no_secrets(content: str) -> Tuple[bool, List[str]]:
     """Validate that content contains no unredacted secrets.
-    
+
     Returns:
         Tuple of (is_valid, list_of_violations)
     """
     violations = []
-    
+
     if re.search(r'sk-(?:proj-)?[a-zA-Z0-9]{30,}', content):
         violations.append("Found potential OpenAI API key (sk-...)")
-    
+
     if re.search(r'sk-ant-[a-zA-Z0-9\-_]{32,}', content):
         violations.append("Found potential Anthropic API key (sk-ant-...)")
-    
+
     if re.search(r'ak-[a-zA-Z0-9]{20,}', content):
         violations.append("Found potential Composio API key (ak-...)")
-    
+
     if re.search(r'gh[pousr]_[A-Za-z0-9]{20,}', content):
         violations.append("Found potential GitHub token (gh*_...)")
-    
+
     if re.search(r'AKIA[A-Z0-9]{16}', content):
         violations.append("Found potential AWS access key (AKIA...)")
-    
+
     if re.search(r'ASIA[A-Z0-9]{16}', content):
         violations.append("Found potential AWS session key (ASIA...)")
-    
+
     base64_matches = re.findall(r'\b[A-Za-z0-9+/]{40,}={0,2}\b', content)
     for match in base64_matches:
         if 'REDACTED' not in match:
             violations.append(f"Found unredacted high-entropy base64 string")
             break
-    
+
     password_pattern = r'(?i)password\s*[=:]\s*["\']?([^\s"\'\[]+)'
     for match in re.finditer(password_pattern, content):
         value = match.group(1)
         if not value.startswith('[REDACTED'):
             violations.append("Found unredacted password assignment")
             break
-    
+
     if re.search(r'eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}', content):
         violations.append("Found potential JWT token")
-    
+
     if re.search(r'-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----', content):
         violations.append("Found SSH private key header")
-    
+
     if re.search(r'\w+://[^:@\s]+:[^@\s]+@', content):
         conn_matches = re.findall(r'\w+://[^:@\s]+:[^@\s]+@\S+', content)
         for match in conn_matches:
             if 'REDACTED' not in match:
                 violations.append("Found connection string with embedded credentials")
                 break
-    
+
     return (len(violations) == 0, violations)
 
 
@@ -433,7 +433,7 @@ def get_session_metadata(path: Path) -> Optional[dict]:
 
 def _parse_timestamp(record: dict) -> Optional[datetime]:
     """Parse timestamp from a record.
-    
+
     FIXED: Converts UTC to local timezone using .astimezone()
     """
     # Try outer timestamp first (ISO 8601)
@@ -626,10 +626,13 @@ def find_session_files(sessions_dir: Path) -> list[Path]:
         return []
 
     files = []
-    for f in sessions_dir.glob('*.jsonl'):
-        if f.suffix == '.lock' or f.name.endswith('.jsonl.lock'):
-            continue
-        files.append(f)
+    # Match *.jsonl and also *.jsonl.reset.* and *.jsonl.deleted.* (moved-aside sessions)
+    for pattern in ['*.jsonl', '*.jsonl.reset.*', '*.jsonl.deleted.*']:
+        for f in sessions_dir.glob(pattern):
+            if f.suffix == '.lock' or f.name.endswith('.jsonl.lock'):
+                continue
+            if f not in files:  # Avoid duplicates
+                files.append(f)
 
     files.sort(key=lambda p: p.stat().st_mtime)
     return files
@@ -780,10 +783,10 @@ def get_state_file_path() -> Path:
 def load_state() -> dict:
     """Load state from the state file."""
     state_file = get_state_file_path()
-    
+
     if not state_file.exists():
         return {}
-    
+
     try:
         with state_file.open('r') as f:
             return json.load(f)
@@ -798,22 +801,22 @@ def save_state(
 ) -> None:
     """Save state to the state file."""
     state_file = get_state_file_path()
-    
+
     state = load_state()
-    
+
     if last_run is not None:
         state['last_run'] = last_run.isoformat()
     elif 'last_run' not in state:
         state['last_run'] = datetime.now().isoformat()
-    
+
     if last_successful_date is not None:
         state['last_successful_date'] = last_successful_date.isoformat()
-    
+
     if total_days_processed is not None:
         state['total_days_processed'] = total_days_processed
     elif 'total_days_processed' not in state:
         state['total_days_processed'] = 0
-    
+
     with state_file.open('w') as f:
         json.dump(state, f, indent=2)
 
@@ -822,14 +825,14 @@ def get_changed_days(sessions_dir: Path, since: datetime) -> set[date]:
     """Get set of dates with session activity since a given timestamp."""
     changed_days: set[date] = set()
     since_timestamp = since.timestamp()
-    
+
     for session_file in find_session_files(sessions_dir):
         file_mtime = session_file.stat().st_mtime
-        
+
         if file_mtime > since_timestamp:
             for msg in get_messages(session_file):
                 changed_days.add(_local_date(msg.timestamp))
-    
+
     return changed_days
 
 
@@ -837,10 +840,10 @@ def get_last_run_datetime() -> Optional[datetime]:
     """Get the last run timestamp from state."""
     state = load_state()
     last_run_str = state.get('last_run')
-    
+
     if not last_run_str:
         return None
-    
+
     try:
         return datetime.fromisoformat(last_run_str)
     except (ValueError, TypeError):
@@ -1225,7 +1228,7 @@ def extract_key_exchanges(messages: list[Message], max_exchanges: int = 10) -> l
 
         user_excerpt = text[:100] + ('...' if len(text) > 100 else '')
         user_excerpt = sanitize_content(user_excerpt)
-        
+
         response_excerpt = response_text[:100] + ('...' if len(response_text) > 100 else '') if response_text else ""
         response_excerpt = sanitize_content(response_excerpt)
 
@@ -1406,21 +1409,21 @@ def generate_daily_memory(
             content = content + "\n\n" + hand_written
 
     is_valid, violations = validate_no_secrets(content)
-    
+
     if not is_valid:
         print(f"Warning: Generated content contains potential secrets: {violations}", file=sys.stderr)
         print("Attempting to sanitize...", file=sys.stderr)
-        
+
         content = sanitize_content(content)
-        
+
         is_valid, violations = validate_no_secrets(content)
-        
+
         if not is_valid:
             raise ValueError(
                 f"Generated memory file still contains secrets after sanitization: {violations}. "
                 "Refusing to write file."
             )
-        
+
         print("Content sanitized successfully.", file=sys.stderr)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1487,66 +1490,168 @@ def backfill_all_missing(
 # LLM system prompt for memory generation
 MEMORY_SYSTEM_PROMPT = """You are a memory synthesizer for an AI assistant. Your task is to generate *high-signal, detailed* daily memory summaries from conversation logs.
 
-Key principles:
-- Focus on WHAT happened and WHY (decisions, intent, constraints, tradeoffs)
-- Capture decisions, changes, and outcomes (especially anything that would be hard to reconstruct later)
-- Prefer concrete facts: what files changed, what jobs ran/failed, what was decided, what’s blocked
-- Include enough detail that a future session can pick up the thread without rereading logs
+## CRITICAL PRIORITY ORDER (follow strictly)
+
+**HIGHEST PRIORITY - Always include first:**
+1. USER CONVERSATIONS: Questions, requests, discussions, decisions, and strategic topics the human raised
+2. USER INSIGHTS: Philosophical discussions, personal reflections, creative work, writing projects
+3. USER DECISIONS: Explicit choices made by the user about strategy, direction, priorities
+
+**MEDIUM PRIORITY:**
+4. Significant technical accomplishments (new features, bug fixes, integrations)
+5. System failures and their resolutions
+6. Important discoveries or learnings
+
+**LOWEST PRIORITY (include only if space allows):**
+7. Routine cron job execution (unless failures)
+8. Standard health checks (unless failures)
+9. Automated maintenance tasks
+
+## Key Principles
+- USER CONVERSATIONS ARE THE MOST IMPORTANT CONTENT. Never skip them for technical work.
+- When there are 500+ messages with heavy automated/cron activity, explicitly scan for USER role messages first
+- Capture the *substance* of user discussions, not just that they happened
+- Focus on WHAT was discussed and any conclusions/decisions reached
+- Include enough detail that a future session can continue the conversation
 - Write in past tense. Be clear and structured.
 
-Length guidance:
-- Default target: ~800–1500 words when there were substantial tool calls / long sessions.
-- If the day was light, shorter is fine — but don’t force brevity.
+## Length Guidance
+- Default target: ~800–1500 words when there were substantial conversations/tool calls
+- If the day was light, shorter is fine — but don't force brevity
+- If there were rich user discussions, err on the side of more detail
 
-Structure:
-1) Overview (2–5 sentences)
-2) Key accomplishments / decisions (bulleted; include *why* it mattered)
-3) Notable findings / insights / patterns
-4) Operational notes (auth issues, cron/tooling failures, environment changes)
-5) Open loops / next actions (bulleted, actionable)
+## Structure
+1) Overview (2–5 sentences, mention key USER topics first)
+2) User discussions & decisions (REQUIRED section if any user conversations occurred)
+3) Key accomplishments / technical changes (bulleted; include *why* it mattered)
+4) Notable findings / insights / patterns  
+5) Operational notes (auth issues, cron/tooling failures, environment changes)
+6) Open loops / next actions (bulleted, actionable)
 
-Do NOT include:
+## Do NOT Include
 - Long verbatim logs (short quotes only if they capture a key decision)
 - Secrets, credentials, tokens, raw personal data (PII)
+- Extensive cron job details unless they failed
 
-Your output should read like a pragmatic journal entry written by the assistant for its future self."""
+Your output should read like a pragmatic journal entry that prioritizes what the HUMAN cared about that day."""
+
+
+def strip_telegram_envelope(text: str) -> str:
+    """Strip Telegram/channel metadata envelope to extract actual user message.
+    
+    Messages from Telegram arrive wrapped in metadata like:
+    
+        Conversation info (untrusted metadata):
+        ```json
+        { "message_id": "123", ... }
+        ```
+        
+        Sender (untrusted metadata):
+        ```json
+        { ... }
+        ```
+        
+        Actual message here
+    
+    This function extracts just the actual message content.
+    """
+    import re
+    
+    # Pattern to match the envelope blocks
+    # Look for the end of the last ``` block after "Sender" info
+    patterns = [
+        # Match full envelope: Conversation info + Sender info + content
+        r'^Conversation info \(untrusted metadata\):.*?```\s*\n\nSender \(untrusted metadata\):.*?```\s*\n\n(.*)$',
+        # Simpler: just find content after last ``` block  
+        r'```\s*\n\n([^`].*)$',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            if content and len(content) > 10:  # Sanity check
+                return content
+    
+    # If no envelope found, return original (might be direct message)
+    return text
 
 
 def prepare_conversation_text(messages: list[Message], max_chars: int = 100000) -> str:
-    """Prepare conversation text for summarization."""
-    lines = []
-    total_chars = 0
+    """Prepare conversation text for summarization.
+    
+    Separates USER messages into a priority section to ensure they're not lost
+    when there's heavy automated/assistant activity.
+    """
+    # Separate user messages from others
+    user_messages = []
+    other_messages = []
     
     for msg in messages:
-        sanitized_content = sanitize_content(msg.text_content)
+        raw_content = msg.text_content
         
+        # For user messages, strip Telegram envelope to get actual content
+        if msg.role == 'user':
+            raw_content = strip_telegram_envelope(raw_content)
+        
+        sanitized_content = sanitize_content(raw_content)
         time_str = msg.timestamp.strftime('%H:%M')
         role = msg.role.upper()
         model_str = f" [{msg.model}]" if msg.model else ""
         
-        line = f"[{time_str}] {role}{model_str}: {sanitized_content[:500]}"
+        # Skip cron job triggers and system messages for the main log
+        # (they'll still appear if user responded to them)
+        is_cron = sanitized_content.startswith('[cron:') or 'A scheduled reminder has been triggered' in sanitized_content
         
+        # Allow more chars for user messages since they're the priority
+        max_content_len = 1500 if msg.role == 'user' else 500
+        line = f"[{time_str}] {role}{model_str}: {sanitized_content[:max_content_len]}"
+        
+        if msg.role == 'user' and not is_cron:
+            user_messages.append((msg.timestamp, line))
+        else:
+            other_messages.append((msg.timestamp, line))
+    
+    # Build output with USER CONVERSATIONS section first
+    output_parts = []
+    total_chars = 0
+    
+    # Always include all user messages first (they're the priority)
+    if user_messages:
+        output_parts.append("=== USER CONVERSATIONS (PRIORITY - summarize these first) ===\n")
+        for ts, line in sorted(user_messages, key=lambda x: x[0]):
+            if total_chars + len(line) > max_chars * 0.6:  # Reserve 60% for user content
+                output_parts.append("\n[... additional user messages truncated ...]\n")
+                break
+            output_parts.append(line)
+            total_chars += len(line)
+    
+    # Then add assistant/system context
+    output_parts.append("\n\n=== ASSISTANT ACTIVITY & CONTEXT ===\n")
+    remaining_chars = max_chars - total_chars
+    
+    for ts, line in sorted(other_messages, key=lambda x: x[0]):
         if total_chars + len(line) > max_chars:
+            output_parts.append("\n[... additional messages truncated ...]\n")
             break
-        
-        lines.append(line)
+        output_parts.append(line)
         total_chars += len(line)
     
-    return '\n\n'.join(lines)
+    return '\n\n'.join(output_parts)
 
 
 def format_transitions_note(transitions: list[ModelTransition]) -> str:
     """Format transitions as a note for the prompt."""
     if not transitions:
         return ""
-    
+
     lines = ["\nModel transitions:"]
     for t in transitions:
         time_str = t.timestamp.strftime('%H:%M')
         from_str = t.from_model or "start"
         to_str = t.to_model
         lines.append(f"- {time_str}: {from_str} -> {to_str}")
-    
+
     return '\n'.join(lines)
 
 
@@ -1559,28 +1664,40 @@ def _build_summarization_prompt(
     """Build the prompt for LLM summarization."""
     conversation_text = prepare_conversation_text(messages)
     transitions_note = format_transitions_note(transitions)
-    
+
     day_name = log_date.strftime('%A, %Y-%m-%d')
     
+    # Count user vs other messages for context
+    user_msg_count = sum(1 for m in messages if m.role == 'user' and 
+                         not m.text_content.startswith('[cron:') and
+                         'A scheduled reminder has been triggered' not in m.text_content)
+    total_msg_count = len(messages)
+
     user_prompt = f"""Generate a daily memory summary for {day_name}.
 
-Conversation log:
+MESSAGE STATISTICS: {user_msg_count} human user messages out of {total_msg_count} total messages.
+
 {conversation_text}
 {transitions_note}
 
-Requirements:
-- Be *detailed* and high-signal (this is the canonical record for the day).
-- Extract concrete decisions, outcomes, and operational changes.
-- If there were many messages/tool calls, include a richer bullet list and a short “what changed” section.
-- Do NOT include secrets or raw PII.
+CRITICAL REQUIREMENTS:
+1. START with a "User Conversations & Decisions" section - MANDATORY if any user messages exist
+2. Every substantive user question, discussion topic, or decision MUST be captured
+3. Do NOT let automated/cron activity overshadow user discussions
+4. Include the *substance* of conversations (what was discussed, what was concluded)
+5. Technical accomplishments come AFTER user content
+6. Do NOT include secrets or raw PII
 
-Write in clear narrative + structured bullets."""
-    
+The "USER CONVERSATIONS" section above contains the MOST IMPORTANT content.
+If you find yourself writing mostly about cron jobs or automated tasks, STOP and re-read the user messages.
+
+Write with the structure: Overview → User Discussions → Technical Work → Open Loops."""
+
     if existing_content:
         _, hand_written = extract_preserved_content(existing_content)
         if hand_written:
             user_prompt += f"\n\nExisting hand-written notes (PRESERVE AND INCORPORATE):\n{hand_written}"
-    
+
     return user_prompt
 
 
@@ -1595,28 +1712,28 @@ def summarize_with_openclaw(
     model: Optional[str] = None
 ) -> str:
     """Use OpenClaw's sessions_spawn to summarize via the user's configured model.
-    
+
     This is the preferred method as it uses the user's existing OpenClaw setup
     and doesn't require separate API keys.
     """
     user_prompt = _build_summarization_prompt(log_date, messages, transitions, existing_content)
-    
+
     # Combine system prompt and user prompt for the task
     full_prompt = f"""{MEMORY_SYSTEM_PROMPT}
 
 ---
 
 {user_prompt}"""
-    
+
     # Use OpenClaw CLI to run an agent turn via the gateway
     import json
     import tempfile
-    
+
     # Write prompt to a temp file to avoid shell escaping issues with large prompts
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         f.write(full_prompt)
         prompt_file = f.name
-    
+
     try:
         # Build the openclaw agent command
         # Use --local for direct execution without delivery, --json for structured output
@@ -1626,7 +1743,7 @@ def summarize_with_openclaw(
             "--json",
             "--timeout", "300"
         ]
-        
+
         # Use openclaw agent with a unique session ID to avoid locking the main session
         import time
         session_id = f"memory-sync-{int(time.time())}"
@@ -1637,7 +1754,7 @@ def summarize_with_openclaw(
             "--json",
             "--timeout", "300"
         ]
-        
+
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -1645,7 +1762,7 @@ def summarize_with_openclaw(
             timeout=360,
             env={**os.environ}
         )
-        
+
         if result.returncode == 0:
             # Parse JSON output to extract the agent's response
             try:
@@ -1715,7 +1832,7 @@ def summarize_with_openai_package(
             "openai package not installed. "
             "Install with: pip install openai"
         )
-    
+
     # Configure based on provider
     if provider == "anthropic":
         api_key = os.environ.get('ANTHROPIC_API_KEY')
@@ -1735,11 +1852,11 @@ def summarize_with_openai_package(
                 "OPENAI_API_KEY not set. "
                 "Set it with: export OPENAI_API_KEY=sk-..."
             )
-    
+
     client = OpenAI(api_key=api_key, base_url=base_url)
-    
+
     user_prompt = _build_summarization_prompt(log_date, messages, transitions, existing_content)
-    
+
     response = client.chat.completions.create(
         model=model or default_model,
         messages=[
@@ -1749,31 +1866,31 @@ def summarize_with_openai_package(
         max_tokens=3500,
         temperature=0.3
     )
-    
+
     return sanitize_content(response.choices[0].message.content)
 
 
 def get_summarizer(backend: str):
     """Factory function to get the appropriate summarizer based on backend choice."""
-    
+
     def openclaw_summarizer(log_date, messages, transitions, existing_content=None, model=None):
         return summarize_with_openclaw(log_date, messages, transitions, existing_content, model)
-    
+
     def openai_summarizer(log_date, messages, transitions, existing_content=None, model=None):
         return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="openai")
-    
+
     def anthropic_summarizer(log_date, messages, transitions, existing_content=None, model=None):
         return summarize_with_anthropic(log_date, messages, transitions, existing_content, model)
-    
+
     backends = {
         'openclaw': openclaw_summarizer,
         'openai': openai_summarizer,
         'anthropic': anthropic_summarizer,
     }
-    
+
     if backend not in backends:
         raise ValueError(f"Unknown summarization backend: {backend}. Choose from: {list(backends.keys())}")
-    
+
     return backends[backend]
 
 
@@ -1792,44 +1909,56 @@ def summarize_with_anthropic(
             "anthropic package not installed. "
             "Install with: pip install anthropic"
         )
-    
+
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         raise ValueError(
             "ANTHROPIC_API_KEY environment variable not set. "
             "Set it with: export ANTHROPIC_API_KEY=sk-ant-..."
         )
-    
+
     client = anthropic.Anthropic(api_key=api_key)
-    
+
     # Use default model if not specified
     if model is None:
         model = DEFAULT_SUMMARIZE_MODEL
-    
+
     conversation_text = prepare_conversation_text(messages)
     transitions_note = format_transitions_note(transitions)
-    
+
     day_name = log_date.strftime('%A, %Y-%m-%d')
     
+    # Count user vs other messages for context  
+    user_msg_count = sum(1 for m in messages if m.role == 'user' and 
+                         not m.text_content.startswith('[cron:') and
+                         'A scheduled reminder has been triggered' not in m.text_content)
+    total_msg_count = len(messages)
+
     user_prompt = f"""Generate a daily memory summary for {day_name}.
 
-Conversation log:
+MESSAGE STATISTICS: {user_msg_count} human user messages out of {total_msg_count} total messages.
+
 {conversation_text}
 {transitions_note}
 
-Requirements:
-- Be *detailed* and high-signal (this is the canonical record for the day).
-- Extract concrete decisions, outcomes, and operational changes.
-- If there were many messages/tool calls, include a richer bullet list and a short “what changed” section.
-- Do NOT include secrets or raw PII.
+CRITICAL REQUIREMENTS:
+1. START with a "User Conversations & Decisions" section - MANDATORY if any user messages exist
+2. Every substantive user question, discussion topic, or decision MUST be captured
+3. Do NOT let automated/cron activity overshadow user discussions
+4. Include the *substance* of conversations (what was discussed, what was concluded)
+5. Technical accomplishments come AFTER user content
+6. Do NOT include secrets or raw PII
 
-Write in clear narrative + structured bullets."""
-    
+The "USER CONVERSATIONS" section above contains the MOST IMPORTANT content.
+If you find yourself writing mostly about cron jobs or automated tasks, STOP and re-read the user messages.
+
+Write with the structure: Overview → User Discussions → Technical Work → Open Loops."""
+
     if existing_content:
         _, hand_written = extract_preserved_content(existing_content)
         if hand_written:
             user_prompt += f"\n\nExisting hand-written notes (PRESERVE AND INCORPORATE):\n{hand_written}"
-    
+
     response = client.messages.create(
         model=model,
         max_tokens=3500,
@@ -1839,9 +1968,9 @@ Write in clear narrative + structured bullets."""
             "content": user_prompt
         }]
     )
-    
+
     summary = response.content[0].text
-    
+
     return sanitize_content(summary)
 
 
@@ -1855,7 +1984,7 @@ def generate_summarized_memory(
     backend: str = 'openclaw'
 ) -> str:
     """Generate a daily memory file using LLM summarization.
-    
+
     Args:
         log_date: The date to generate memory for
         sessions_dir: Path to session logs directory
@@ -1871,27 +2000,27 @@ def generate_summarized_memory(
             raise FileExistsError(f"File already exists: {output_path}. Use --force to overwrite.")
         if preserve:
             existing_content = output_path.read_text()
-    
+
     messages: list[Message] = []
     transitions: list[ModelTransition] = []
-    
+
     for session_file in find_session_files(sessions_dir):
         for msg in get_messages(session_file, date_filter=log_date):
             messages.append(msg)
-        
+
         for trans in get_model_transitions(session_file):
             if _local_date(trans.timestamp) == log_date:
                 transitions.append(trans)
-    
+
     if not messages:
         raise ValueError(f"No messages found for {log_date}")
-    
+
     messages.sort(key=lambda m: m.timestamp)
     transitions.sort(key=lambda t: t.timestamp)
-    
+
     # Get the appropriate summarizer based on backend
     summarizer = get_summarizer(backend)
-    
+
     try:
         summary = summarizer(
             log_date, messages, transitions,
@@ -1904,7 +2033,7 @@ def generate_summarized_memory(
             print(f"Warning: OpenClaw summarization failed ({e})", file=sys.stderr)
             print("Try using --summarize-backend=anthropic (recommended) or --summarize-backend=openai", file=sys.stderr)
         raise
-    
+
     lines = []
     lines.append(f"# {log_date} ({log_date.strftime('%A')})")
     lines.append("")
@@ -1915,30 +2044,30 @@ def generate_summarized_memory(
     lines.append("---")
     lines.append("")
     lines.append("*Review and edit this draft to capture what's actually important.*")
-    
+
     content = '\n'.join(lines)
-    
+
     is_valid, violations = validate_no_secrets(content)
-    
+
     if not is_valid:
         print(f"Warning: LLM output contains potential secrets: {violations}", file=sys.stderr)
         print("Attempting to sanitize...", file=sys.stderr)
-        
+
         content = sanitize_content(content)
-        
+
         is_valid, violations = validate_no_secrets(content)
-        
+
         if not is_valid:
             raise ValueError(
                 f"Memory file still contains secrets after sanitization: {violations}. "
                 "Refusing to write file."
             )
-        
+
         print("Content sanitized successfully.", file=sys.stderr)
-    
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content)
-    
+
     return str(output_path)
 
 
@@ -2179,11 +2308,11 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
     # Validate mutual exclusivity
     date_flags = [target_date, backfill_all, today, since_date, incremental]
     date_flags_count = sum(1 for flag in date_flags if flag)
-    
+
     if date_flags_count == 0:
         click.echo("Error: Must specify one of: --date, --today, --since, --all, or --incremental", err=True)
         sys.exit(1)
-    
+
     if date_flags_count > 1:
         click.echo("Error: Cannot combine --date, --today, --since, --all, and --incremental", err=True)
         sys.exit(1)
@@ -2212,50 +2341,50 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
 
     # Determine dates to process
     dates_to_process = []
-    
+
     if target_date:
         log_date = parse_date_str(target_date)
         dates_to_process = [log_date]
-        
+
     elif today:
         log_date = datetime.now().date()
         dates_to_process = [log_date]
         click.echo(f"Processing today: {log_date}")
-        
+
     elif since_date:
         from_date = parse_date_str(since_date)
         to_date = parse_date_str(until_date) if until_date else datetime.now().date()
         # until_date is exclusive, so subtract 1 day if specified
         if until_date:
             to_date = to_date - timedelta(days=1)
-        
+
         if from_date > to_date:
             click.echo(f"Error: --since date {from_date} is {'in the future' if not until_date else f'after --until date {until_date}'}", err=True)
             sys.exit(1)
-        
+
         current = from_date
         while current <= to_date:
             dates_to_process.append(current)
             current += timedelta(days=1)
-        
+
         until_msg = f" (until {until_date}, exclusive)" if until_date else ""
         click.echo(f"Processing dates from {from_date} to {to_date}{until_msg} ({len(dates_to_process)} days)")
-        
+
     elif incremental:
         last_run = get_last_run_datetime()
-        
+
         if last_run is None:
             click.echo("No previous run found. Use --all for initial backfill.", err=True)
             sys.exit(1)
-        
+
         changed_dates = get_changed_days(sessions_path, last_run)
         dates_to_process = sorted(changed_dates)
-        
+
         if dates_to_process:
             click.echo(f"Found {len(dates_to_process)} days with changes since {last_run.strftime('%Y-%m-%d %H:%M')}")
         else:
             click.echo(f"No changes since last run at {last_run.strftime('%Y-%m-%d %H:%M')}")
-    
+
     # Apply until_date filter if specified
     if until_date and dates_to_process:
         until = parse_date_str(until_date)
@@ -2263,16 +2392,16 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
         dates_to_process = [d for d in dates_to_process if d < until]
         if len(dates_to_process) < original_count:
             click.echo(f"Filtered to dates before {until}: {len(dates_to_process)} days (excluded {original_count - len(dates_to_process)})")
-    
+
     # Process specific dates
     if dates_to_process and not backfill_all:
         created = []
         skipped = []
         errors = []
-        
+
         for log_date in dates_to_process:
             output_path = memory_path / f"{log_date}.md"
-            
+
             if dry_run:
                 click.echo(f"Would create: {output_path}")
                 created.append(str(output_path))
@@ -2296,7 +2425,7 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
                     else:
                         click.echo(f"Error: {e}", err=True)
                         sys.exit(1)
-        
+
         if len(dates_to_process) > 1:
             click.echo("")
             if created:
@@ -2306,7 +2435,7 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
                 click.echo(f"Skipped {len(skipped)} existing files (use --force to overwrite)")
             if errors:
                 click.echo(f"Errors: {len(errors)}", err=True)
-        
+
         if incremental and created and not dry_run:
             state = load_state()
             total = state.get('total_days_processed', 0) + len(created)
@@ -2317,7 +2446,7 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
                 total_days_processed=total
             )
             click.echo(f"Updated state: {total} total days processed")
-    
+
     elif backfill_all:
         if summarize:
             gaps = find_gaps(sessions_path, memory_path)
