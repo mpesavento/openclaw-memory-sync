@@ -1577,15 +1577,18 @@ def strip_telegram_envelope(text: str) -> str:
     return text
 
 
-def prepare_conversation_text(messages: list[Message], max_chars: int = 100000) -> str:
-    """Prepare conversation text for summarization.
+def prepare_conversation_text_full(messages: list[Message]) -> tuple[str, str]:
+    """Prepare FULL conversation text without truncation.
+    
+    Returns (user_section, assistant_section) as separate strings.
+    NO TRUNCATION - caller handles chunking if needed.
     
     Separates USER messages into a priority section to ensure they're not lost
     when there's heavy automated/assistant activity.
     """
     # Separate user messages from others
-    user_messages = []
-    other_messages = []
+    user_lines = []
+    other_lines = []
     
     for msg in messages:
         raw_content = msg.text_content
@@ -1600,44 +1603,120 @@ def prepare_conversation_text(messages: list[Message], max_chars: int = 100000) 
         model_str = f" [{msg.model}]" if msg.model else ""
         
         # Skip cron job triggers and system messages for the main log
-        # (they'll still appear if user responded to them)
         is_cron = sanitized_content.startswith('[cron:') or 'A scheduled reminder has been triggered' in sanitized_content
         
-        # Allow more chars for user messages since they're the priority
-        max_content_len = 1500 if msg.role == 'user' else 500
-        line = f"[{time_str}] {role}{model_str}: {sanitized_content[:max_content_len]}"
+        # FULL content - no truncation
+        line = f"[{time_str}] {role}{model_str}: {sanitized_content}"
         
         if msg.role == 'user' and not is_cron:
-            user_messages.append((msg.timestamp, line))
+            user_lines.append((msg.timestamp, line))
+        elif not is_cron:  # Skip cron for assistant section too unless interesting
+            other_lines.append((msg.timestamp, line))
+    
+    # Sort by timestamp
+    user_lines.sort(key=lambda x: x[0])
+    other_lines.sort(key=lambda x: x[0])
+    
+    user_section = "\n\n".join(line for _, line in user_lines)
+    assistant_section = "\n\n".join(line for _, line in other_lines)
+    
+    return user_section, assistant_section
+
+
+def chunk_messages_by_size(messages: list[Message], max_chunk_chars: int = 60000, max_single_msg_chars: int = 15000) -> list[list[Message]]:
+    """Split messages into size-based chunks for incremental summarization.
+    
+    For days with heavy activity, we summarize in chunks then combine.
+    Each chunk is guaranteed to be under max_chunk_chars.
+    
+    Oversized individual messages (>max_single_msg_chars) are truncated with a note.
+    """
+    if not messages:
+        return []
+    
+    chunks = []
+    current_chunk = []
+    current_chars = 0
+    
+    for msg in sorted(messages, key=lambda m: m.timestamp):
+        # Estimate this message's contribution
+        content = msg.text_content
+        if msg.role == 'user':
+            content = strip_telegram_envelope(content)
+        
+        sanitized = sanitize_content(content)
+        msg_chars = len(sanitized)
+        
+        # Truncate oversized individual messages
+        if msg_chars > max_single_msg_chars:
+            # Create a truncated copy of the message
+            truncated_content = sanitized[:max_single_msg_chars] + f"\n\n[... TRUNCATED - original was {msg_chars:,} chars ...]"
+            # Create new Message with truncated content
+            msg = Message(
+                id=msg.id,
+                timestamp=msg.timestamp,
+                role=msg.role,
+                text_content=truncated_content,
+                model=msg.model,
+                provider=msg.provider,
+                has_tool_calls=msg.has_tool_calls,
+                has_thinking=msg.has_thinking
+            )
+            msg_chars = len(truncated_content)
+        
+        # If adding this message would exceed limit, start new chunk
+        if current_chars + msg_chars > max_chunk_chars and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = [msg]
+            current_chars = msg_chars
         else:
-            other_messages.append((msg.timestamp, line))
+            current_chunk.append(msg)
+            current_chars += msg_chars
     
-    # Build output with USER CONVERSATIONS section first
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (1 token ≈ 4 chars for English)."""
+    return len(text) // 4
+
+
+def prepare_conversation_text(messages: list[Message], max_chars: int = 100000) -> str:
+    """Prepare conversation text for summarization.
+    
+    If content fits in max_chars, returns full text.
+    If content exceeds max_chars, returns with a note that chunked summarization is needed.
+    
+    NO TRUNCATION of individual messages - full content preserved.
+    """
+    user_section, assistant_section = prepare_conversation_text_full(messages)
+    
+    total_chars = len(user_section) + len(assistant_section)
+    
+    # Count actual user messages (not cron)
+    user_msg_count = sum(1 for m in messages if m.role == 'user' and 
+                         not m.text_content.startswith('[cron:') and
+                         'A scheduled reminder has been triggered' not in m.text_content)
+    
     output_parts = []
-    total_chars = 0
     
-    # Always include all user messages first (they're the priority)
-    if user_messages:
-        output_parts.append("=== USER CONVERSATIONS (PRIORITY - summarize these first) ===\n")
-        for ts, line in sorted(user_messages, key=lambda x: x[0]):
-            if total_chars + len(line) > max_chars * 0.6:  # Reserve 60% for user content
-                output_parts.append("\n[... additional user messages truncated ...]\n")
-                break
-            output_parts.append(line)
-            total_chars += len(line)
-    
-    # Then add assistant/system context
+    # Header with stats
+    output_parts.append(f"=== USER CONVERSATIONS ({user_msg_count} messages - PRIORITY) ===\n")
+    output_parts.append(user_section)
     output_parts.append("\n\n=== ASSISTANT ACTIVITY & CONTEXT ===\n")
-    remaining_chars = max_chars - total_chars
+    output_parts.append(assistant_section)
     
-    for ts, line in sorted(other_messages, key=lambda x: x[0]):
-        if total_chars + len(line) > max_chars:
-            output_parts.append("\n[... additional messages truncated ...]\n")
-            break
-        output_parts.append(line)
-        total_chars += len(line)
+    full_text = "\n".join(output_parts)
     
-    return '\n\n'.join(output_parts)
+    # If we exceed limit, add warning but DON'T truncate
+    if total_chars > max_chars:
+        warning = f"\n\n[NOTE: Total content is {total_chars:,} chars ({estimate_tokens(full_text):,} est. tokens). Full content included - no truncation.]\n"
+        full_text = warning + full_text
+    
+    return full_text
 
 
 def format_transitions_note(transitions: list[ModelTransition]) -> str:
@@ -1870,6 +1949,131 @@ def summarize_with_openai_package(
     return sanitize_content(response.choices[0].message.content)
 
 
+def summarize_chunked(
+    log_date: date,
+    messages: list[Message],
+    transitions: list[ModelTransition],
+    existing_content: Optional[str] = None,
+    model: Optional[str] = None,
+    backend: str = 'openclaw',
+    max_chunk_chars: int = 60000,
+    max_context_chars: int = 80000
+) -> str:
+    """Summarize large days by chunking into size-based segments.
+    
+    For days with heavy activity that would exceed context limits:
+    1. Split messages into size-based chunks (each under max_chunk_chars)
+    2. Summarize each chunk independently
+    3. Combine chunk summaries into final daily summary
+    
+    This ensures NO TRUNCATION of individual messages.
+    """
+    # Check if we need chunking
+    user_section, assistant_section = prepare_conversation_text_full(messages)
+    total_chars = len(user_section) + len(assistant_section)
+    
+    if total_chars <= max_context_chars:
+        # Fits in context - use normal summarization
+        summarizer = get_summarizer(backend)
+        return summarizer(log_date, messages, transitions, existing_content, model)
+    
+    # Need chunking - use SIZE-based chunking to guarantee each chunk fits
+    print(f"  Large day ({total_chars:,} chars) - using chunked summarization...")
+    
+    chunks = chunk_messages_by_size(messages, max_chunk_chars)
+    print(f"  Split into {len(chunks)} chunks (max {max_chunk_chars:,} chars each)")
+    
+    chunk_summaries = []
+    summarizer = get_summarizer(backend)
+    
+    # Parallel chunk summarization using ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    
+    def summarize_chunk(chunk_info):
+        i, chunk = chunk_info
+        if not chunk:
+            return None
+        chunk_start = chunk[0].timestamp.strftime('%H:%M')
+        chunk_end = chunk[-1].timestamp.strftime('%H:%M')
+        print(f"  [Thread {threading.current_thread().name}] Summarizing chunk {i+1}/{len(chunks)} ({chunk_start}-{chunk_end}, {len(chunk)} messages)...")
+        try:
+            summary = summarizer(log_date, chunk, [], None, model)
+            return (i, f"### Time Block {i+1}: {chunk_start}-{chunk_end}\n\n{summary}")
+        except Exception as e:
+            print(f"  [Thread] Chunk {i+1} failed: {e}")
+            return (i, f"### Time Block {i+1}: {chunk_start}-{chunk_end}\n\n[Summarization failed: {e}]")
+    
+    # Use 3 parallel workers (balance between speed and API rate limits)
+    MAX_WORKERS = 3
+    print(f"  Parallelizing with {MAX_WORKERS} workers...")
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(summarize_chunk, (i, chunk)): i for i, chunk in enumerate(chunks)}
+        results = {}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                idx, summary = result
+                results[idx] = summary
+    
+    # Reassemble in order
+    chunk_summaries = [results[i] for i in sorted(results.keys())]
+    
+    # Now combine chunk summaries into final summary
+    combined_chunks = "\n\n---\n\n".join(chunk_summaries)
+    
+    day_name = log_date.strftime('%A, %Y-%m-%d')
+    
+    # Final synthesis prompt
+    synthesis_prompt = f"""You have summarized a large day ({day_name}) in {len(chunks)} time-based chunks.
+Now synthesize these chunk summaries into a single coherent daily memory file.
+
+CHUNK SUMMARIES:
+
+{combined_chunks}
+
+---
+
+Create the final daily summary with the standard structure:
+1. Overview (2-5 sentences covering the whole day)
+2. User Conversations & Decisions (consolidated from all chunks)
+3. Key Accomplishments / Technical Changes
+4. Notable Findings / Insights / Patterns
+5. Open Loops / Next Actions
+
+Merge related topics across chunks. Preserve all important user discussions.
+Remove redundancy but keep detail for significant events."""
+
+    # Use OpenClaw for synthesis
+    import subprocess
+    import json
+    import time as time_module
+    
+    session_id = f"memory-sync-synthesis-{int(time_module.time())}"
+    cmd = [
+        "openclaw", "agent",
+        "--session-id", session_id,
+        "--message", synthesis_prompt,
+        "--json",
+        "--timeout", "300"
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=360, env={**os.environ})
+        if result.returncode == 0:
+            output = json.loads(result.stdout)
+            if 'result' in output and 'payloads' in output['result']:
+                payloads = output['result']['payloads']
+                if payloads:
+                    return sanitize_content(payloads[0].get('text', '').strip())
+        # Fallback: return combined chunks
+        return f"# {day_name}\n\n*Chunked summary (synthesis failed)*\n\n{combined_chunks}"
+    except Exception as e:
+        print(f"  Synthesis failed: {e}")
+        return f"# {day_name}\n\n*Chunked summary (synthesis failed: {e})*\n\n{combined_chunks}"
+
+
 def get_summarizer(backend: str):
     """Factory function to get the appropriate summarizer based on backend choice."""
 
@@ -2018,15 +2222,31 @@ def generate_summarized_memory(
     messages.sort(key=lambda m: m.timestamp)
     transitions.sort(key=lambda t: t.timestamp)
 
-    # Get the appropriate summarizer based on backend
-    summarizer = get_summarizer(backend)
-
+    # Check content size to decide on chunking
+    user_section, assistant_section = prepare_conversation_text_full(messages)
+    total_chars = len(user_section) + len(assistant_section)
+    
+    # Use chunked summarization for large days (>80k chars ≈ 20k tokens)
+    MAX_CONTEXT_CHARS = 80000
+    
     try:
-        summary = summarizer(
-            log_date, messages, transitions,
-            existing_content=existing_content if preserve else None,
-            model=model
-        )
+        if total_chars > MAX_CONTEXT_CHARS:
+            print(f"  Large day detected ({total_chars:,} chars) - using chunked summarization")
+            summary = summarize_chunked(
+                log_date, messages, transitions,
+                existing_content=existing_content if preserve else None,
+                model=model,
+                backend=backend,
+                max_context_chars=MAX_CONTEXT_CHARS
+            )
+        else:
+            # Normal summarization
+            summarizer = get_summarizer(backend)
+            summary = summarizer(
+                log_date, messages, transitions,
+                existing_content=existing_content if preserve else None,
+                model=model
+            )
     except Exception as e:
         # If openclaw backend fails, provide helpful error message
         if backend == 'openclaw':

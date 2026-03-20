@@ -13,37 +13,36 @@ description: >
 
 Tool for maintaining agent memory continuity across model switches with automatic secret sanitization.
 
+## Recent Changes (March 2026)
+
+### v2.0 - Major Consolidation Improvements
+
+1. **OpenClaw Backend Default** - Uses `openclaw agent` CLI instead of external APIs (no API key management)
+2. **Session File Discovery** - Now scans `.jsonl.reset.*` and `.jsonl.deleted.*` files (OpenClaw moves sessions aside during compaction)
+3. **User Conversation Priority** - LLM summaries now prioritize USER messages over cron/automated activity
+4. **Telegram Envelope Stripping** - Extracts actual message content from channel metadata wrappers
+5. **Chunked Parallel Summarization** - Large days (>80k chars) are split into 60k chunks, processed in parallel (3 workers)
+6. **Tool Result Truncation** - Large tool outputs (API dumps, web fetches) truncated to 15k chars with note
+
 ## Installation
 
 Requires Python 3.11+ and `click`:
 
 ```bash
 pip install click
-
-# Optional: for direct API summarization (only if not using Anthropic backend)
-pip install openai
 ```
 
 ## Quick Start
 
 ```bash
-# Run directly from skill directory
+# Check for gaps
 python ~/.openclaw/skills/memory-sync/memory_sync.py compare
 
-# Or create an alias for convenience
-alias memory-sync="python ~/.openclaw/skills/memory-sync/memory_sync.py"
+# Backfill with LLM summary (recommended)
+python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --today --summarize --preserve
 
-# Check for gaps
-memory-sync compare
-
-# Backfill today's memory (simple extraction - fast, no LLM)
-memory-sync backfill --today
-
-# Backfill with LLM narrative (uses Anthropic's Claude model - requires ANTHROPIC_API_KEY)
-memory-sync backfill --today --summarize
-
-# Backfill all missing
-memory-sync backfill --all
+# Backfill all missing dates
+python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --all --summarize
 ```
 
 ## Commands
@@ -52,223 +51,143 @@ memory-sync backfill --all
 |---------|-------------|
 | `compare` | Find gaps between session logs and memory files |
 | `backfill --today` | Generate memory for current day |
-| `backfill --since YYYY-MM-DD` | Backfill from date to present |
-| `backfill --all` | Backfill all missing dates |
+| `backfill --date YYYY-MM-DD` | Backfill specific date |
 | `backfill --incremental` | Backfill only changed dates since last run |
-| `extract` | Extract conversations matching criteria |
-| `summarize --date YYYY-MM-DD` | Generate LLM summary for a single day |
+| `backfill --all` | Backfill all missing dates |
+| `stats` | Show coverage statistics |
 | `transitions` | List model transitions |
 | `validate` | Check memory files for consistency issues |
-| `stats` | Show coverage statistics |
 
-## Simple Extraction vs LLM Summarization
+## Key Options
 
-The backfill command supports two modes:
-
-**Simple Extraction (default, without `--summarize`):**
-- Fast, no LLM or API calls needed
-- Extracts topics via keyword frequency analysis
-- Identifies key user questions and assistant responses
-- Detects decision markers from text patterns
-- Produces structured output with Topics, Key Exchanges, Decisions sections
-- With `--preserve`: Hand-written content is **appended** to the end of the new file
-- Best for: Quick backfills, initial setup, systems without LLM access
-
-**LLM Summarization (with `--summarize`) - Recommended:**
-- Uses LLM to generate narrative summaries
-- Produces coherent 2-4 paragraph prose
-- Better context and insight extraction
-- With `--preserve`: Existing content is **passed to the LLM** with instructions to incorporate it into the new summary, maintaining temporal order and thematic structure
-- Best for: Daily automation, high-quality memory files
-
-**Recommended for regular use:**
 ```bash
-# Best quality: LLM summary that incorporates any existing notes
-memory-sync backfill --today --summarize --preserve
+# Core flags
+--summarize              # Use LLM for narrative summaries (recommended)
+--preserve               # Keep hand-written content when regenerating
+--force                  # Overwrite existing files
+--dry-run                # Preview without creating files
 
-# Or explicitly specify Anthropic backend (now the default)
-memory-sync backfill --today --summarize --preserve --summarize-backend anthropic
+# Backend selection (openclaw is default)
+--summarize-backend openclaw    # Uses OpenClaw gateway (default, no API key needed)
+--summarize-backend anthropic   # Direct Anthropic API (requires ANTHROPIC_API_KEY)
+--summarize-backend openai      # Direct OpenAI API (requires OPENAI_API_KEY)
 ```
 
-Both modes automatically sanitize secrets before writing.
+## How It Works
 
-## Common Workflows
+### Session File Discovery
 
-### Initial Setup
+Scans ALL session files including moved-aside ones:
+- `*.jsonl` - Active session files
+- `*.jsonl.reset.*` - Sessions moved during compaction
+- `*.jsonl.deleted.*` - Soft-deleted sessions
 
-```bash
-# Check what's missing
-memory-sync compare
+This ensures conversations aren't lost when OpenClaw resets sessions.
 
-# Backfill everything (may take time)
-memory-sync backfill --all
+### User Conversation Priority
+
+The LLM prompt explicitly prioritizes:
+1. **USER messages** - Questions, discussions, decisions (HIGHEST)
+2. **User insights** - Philosophical discussions, creative work
+3. **Technical accomplishments** - Only after user content
+4. **Cron/automated activity** - Lowest priority, often omitted
+
+This prevents days with heavy cron activity from overshadowing important conversations.
+
+### Telegram Envelope Stripping
+
+Messages from Telegram arrive wrapped in metadata:
+```
+Conversation info (untrusted metadata):
+```json
+{ "message_id": "123", ... }
 ```
 
-### Nightly Automation (Recommended)
-
-```bash
-# Best: LLM summary that incorporates any existing notes
-memory-sync backfill --today --summarize --preserve
-
-# Smart: Process only days changed since last run
-memory-sync backfill --incremental --summarize --preserve
-
-# Or use a specific backend if preferred
-memory-sync backfill --today --summarize --preserve --summarize-backend anthropic
+Actual message here
 ```
 
-### Catch-Up After Gaps
+The tool extracts just the actual message content for summarization.
+
+### Chunked Parallel Summarization
+
+For large days (>80k chars total):
+1. Split messages into 60k char chunks (size-based, not time-based)
+2. Summarize each chunk in parallel (3 workers)
+3. Synthesize chunk summaries into final daily summary
+
+This handles days with 1000+ messages without timeout or context overflow.
+
+### Tool Result Truncation
+
+Large tool outputs (API responses, web fetches) are truncated to 15k chars:
+- Preserves the fact that the tool was called
+- Notes original size: `[... TRUNCATED - original was 200,000 chars ...]`
+- Prevents JSON/HTML dumps from overwhelming summaries
+
+## Nightly Automation
+
+### Recommended Cron Job
 
 ```bash
-# Backfill from last week to present
-memory-sync backfill --since 2026-01-28 --summarize
+# 3am daily - incremental backfill with LLM summaries
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --incremental --summarize --preserve
 ```
 
-### Regenerate with Preserved Content
+### OpenClaw Cron Setup
 
 ```bash
-# Keep hand-written notes when regenerating
-memory-sync backfill --date 2026-02-05 --force --preserve --summarize
+openclaw cron add \
+  --schedule "0 3 * * *" \
+  --name "Nightly memory backfill" \
+  --task "cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --incremental --summarize --preserve"
 ```
 
 ## Secret Sanitization
 
-All content is automatically sanitized to prevent secret leakage:
-
-- **30+ explicit patterns**: OpenAI, Anthropic, GitHub, AWS, Stripe, Discord, Slack, Notion, Google, Brave, Tavily, SerpAPI, etc.
-- **Structural detection**: JWT tokens, SSH keys, database connection strings, high-entropy base64
-- **Generic patterns**: API keys, tokens, passwords, environment variables
-- **Defense-in-depth**: Secrets redacted at every stage (extraction, LLM processing, file writes, CLI display)
-
-Secrets are replaced with `[REDACTED-TYPE]` placeholders.
-
-See `SECRET_PATTERNS.md` for complete pattern list.
-
-## Summarization Backends
-
-The `--summarize` flag supports multiple backends via `--summarize-backend`:
-
-| Backend | Description | API Key Required |
-|---------|-------------|------------------|
-| `anthropic` (default) | Direct Anthropic API via openai package (Claude models) | `ANTHROPIC_API_KEY` |
-| `openclaw` | Uses OpenClaw's `sessions spawn` with your configured model | No |
-| `openai` | Direct OpenAI API via openai package | `OPENAI_API_KEY` |
-
-### Examples
-
-```bash
-# Default: use Anthropic backend (Claude models)
-memory-sync backfill --today --summarize
-
-# Explicit backend selection
-memory-sync backfill --today --summarize --summarize-backend anthropic
-memory-sync backfill --today --summarize --summarize-backend openclaw
-memory-sync backfill --today --summarize --summarize-backend openai
-
-# Override model for any backend
-memory-sync backfill --today --summarize --model claude-sonnet-4-20250514
-memory-sync backfill --today --summarize --summarize-backend openai --model gpt-4o
-```
-
-The `anthropic` backend is now recommended as it:
-- Uses Claude models for high-quality summaries
-- Has proven more reliable than the OpenClaw backend
-- Works directly with the Anthropic API
-
-## Automated Usage
-
-### Nightly Cron (3am)
-
-Process today with LLM summary, preserving any existing notes:
-
-```bash
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --today --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
-```
-
-### Smart Incremental Mode
-
-Automatically detects changes since last run:
-
-```bash
-# Initial backfill (run once, simple extraction for speed)
-python memory_sync.py backfill --all
-
-# Then set up nightly incremental with LLM summaries
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --incremental --summarize --preserve >> ~/.memory-sync/cron.log 2>&1
-```
-
-State is tracked in `~/.memory-sync/state.json`.
+All content is automatically sanitized:
+- 30+ explicit patterns (OpenAI, Anthropic, GitHub, AWS, etc.)
+- JWT tokens, SSH keys, connection strings
+- High-entropy base64 detection
+- Secrets replaced with `[REDACTED-TYPE]` placeholders
 
 ## Configuration
 
 **Default paths:**
-- Session logs: `~/.openclaw/agents/main/sessions/*.jsonl`
+- Session logs: `~/.openclaw/agents/main/sessions/*.jsonl*`
 - Memory files: `~/.openclaw/workspace/memory/`
 
-**Override with CLI flags:**
+**Override:**
 - `--sessions-dir /path/to/sessions`
 - `--memory-dir /path/to/memory`
 
-**Environment variables (only for direct API backends):**
-- `ANTHROPIC_API_KEY` - Required for `--summarize-backend anthropic` (now default)
-- `OPENAI_API_KEY` - Required for `--summarize-backend openai`
-
-The default `anthropic` backend requires the ANTHROPIC_API_KEY environment variable.
-
-```bash
-# Required for default anthropic backend
-export ANTHROPIC_API_KEY=sk-ant-...
-# Only needed if using openai backend
-export OPENAI_API_KEY=sk-...
-```
-
-## Content Preservation
-
-The `--preserve` flag behavior depends on whether `--summarize` is used:
-
-**Without `--summarize` (simple extraction):**
-- Hand-written content (after footer marker) is **appended verbatim** to the end of the newly generated file
-- The new extraction replaces the auto-generated portion, your notes are kept at the end
-
-**With `--summarize` (LLM mode):**
-- Existing hand-written content is **passed to the LLM** as context
-- The LLM is instructed to incorporate your notes into the new summary
-- Result: Your insights are woven into a coherent narrative, not just appended
-
-**Example:**
-```bash
-# Regenerate with LLM, incorporating existing notes into the summary
-memory-sync backfill --date 2026-02-05 --force --preserve --summarize
-```
-
-Auto-generated markers:
-- Header: `*Auto-generated from N session messages*`
-- Footer: `*Review and edit this draft to capture what's actually important.*`
-
-Content after the footer marker is considered hand-written and will be preserved.
-
-## Backfill Options
-
-**Date selection (choose one):**
-- `--date YYYY-MM-DD` - Single specific date
-- `--today` - Current date only (for nightly automation)
-- `--since YYYY-MM-DD` - From date to present (for catch-up)
-- `--all` - All missing dates (for initial setup)
-- `--incremental` - Only dates changed since last run (smart automation)
-
-**Additional flags:**
-- `--dry-run` - Show what would be created without creating files
-- `--force` - Overwrite existing files (required for regeneration)
-- `--preserve` - Keep hand-written content when regenerating
-- `--summarize` - Use LLM for narrative summaries
-- `--summarize-backend BACKEND` - Backend for summarization: `anthropic` (default), `openclaw`, `openai`
-- `--model MODEL` - Model override for summarization (default varies by backend)
-
 ## Performance
 
-| Mode | Time per Day | Best For |
-|------|-------------|----------|
-| `--all` | 5-10 min × N days | Initial setup only |
-| `--since` | 5-10 min × N days | Recovery after gaps |
-| `--today` | 30-60 sec | Nightly automation |
-| `--incremental` | 30-60 sec × changed days | Smart automation |
+| Scenario | Time | Notes |
+|----------|------|-------|
+| Light day (<100 msgs) | 30-60 sec | Single LLM call |
+| Normal day (100-500 msgs) | 1-2 min | Single LLM call |
+| Heavy day (500+ msgs) | 5-10 min | Chunked parallel (3 workers) |
+| Very heavy day (1000+ msgs) | 10-15 min | 15+ chunks, parallel |
+
+## Troubleshooting
+
+### "Lost" Conversations
+
+If conversations seem missing:
+1. Check for `.reset` or `.deleted` session files
+2. Run `memory-sync stats` to see total message count
+3. Re-run backfill with `--force`
+
+### Summaries Missing User Content
+
+The LLM prompt prioritizes user conversations. If still missing:
+1. Check if messages were in a `.reset` file (now auto-scanned)
+2. Verify Telegram envelope stripping is working
+3. Check for very large tool results overwhelming the context
+
+### Slow Backfills
+
+For very large days:
+- Chunked parallel processing kicks in automatically
+- 3 workers process chunks simultaneously
+- Progress shown: `Summarizing chunk X/Y`
