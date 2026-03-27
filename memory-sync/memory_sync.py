@@ -2104,6 +2104,9 @@ def summarize_chunked(
     # Need chunking - use SIZE-based chunking to guarantee each chunk fits
     print(f"  Large day ({len(messages)} messages, {total_chars:,} chars) - using chunked summarization...")
     
+    # Determine if we should use Gemini for synthesis
+    use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
+    
     chunks = chunk_messages_by_size(messages, max_chunk_chars)
     print(f"  Split into {len(chunks)} chunks (max {max_chunk_chars:,} chars each)")
     
@@ -2229,7 +2232,6 @@ Write in past tense. Be detailed but remove redundancy.
 Write a synthesized summary (target: 1000-2000 words) covering all important content from these time blocks."""
             
             print(f"  Batch {i+1}/{len(batches)}...", file=sys.stderr)
-            use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
             batch_result = run_synthesis(batch_prompt, f"-batch{i}", use_gemini=use_gemini)
             
             if batch_result:
