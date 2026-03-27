@@ -62,6 +62,10 @@ MIN_VALID_SIZE = 100  # bytes - minimum size for a memory file to be considered 
 
 # Default LLM model for summarization
 DEFAULT_SUMMARIZE_MODEL = "claude-sonnet-4-5"
+# Faster/cheaper model for individual chunk summaries (chunks get synthesized later)
+DEFAULT_CHUNK_MODEL = "claude-3-haiku-20240307"
+# Message threshold below which we use simple summarization (no chunking)
+SIMPLE_SUMMARY_THRESHOLD = 200  # If <= 200 messages, don't bother chunking
 
 # Rate limiting for batch LLM calls (seconds between requests)
 LLM_BATCH_DELAY_SECONDS = 1.0
@@ -1419,9 +1423,15 @@ def generate_daily_memory(
         is_valid, violations = validate_no_secrets(content)
 
         if not is_valid:
+            # Write to .rejected file for manual review
+            rejected_path = output_path.with_suffix('.md.rejected')
+            rejected_path.parent.mkdir(parents=True, exist_ok=True)
+            rejected_path.write_text(content)
+            print(f"Draft saved to: {rejected_path}", file=sys.stderr)
+            print("⚠️  MANUAL REVIEW REQUIRED: Edit the .rejected file to remove secrets, then rename to .md", file=sys.stderr)
             raise ValueError(
-                f"Generated memory file still contains secrets after sanitization: {violations}. "
-                "Refusing to write file."
+                f"Memory file contains secrets after sanitization: {violations}. "
+                f"Draft saved to {rejected_path} for manual editing."
             )
 
         print("Content sanitized successfully.", file=sys.stderr)
@@ -1536,6 +1546,40 @@ MEMORY_SYSTEM_PROMPT = """You are a memory synthesizer for an AI assistant. Your
 Your output should read like a pragmatic journal entry that prioritizes what the HUMAN cared about that day."""
 
 
+# Concise prompt for individual time-block chunks (used in chunked summarization)
+# These get synthesized later, so they should be BRIEF bullet points, not full narratives
+CHUNK_SYSTEM_PROMPT = """You are summarizing a SHORT TIME BLOCK (typically 30-90 minutes) from an AI assistant's session logs.
+
+## YOUR GOAL: Extract ONLY the essential facts in 100-300 words MAX.
+
+## FORMAT (use this exact structure):
+**User:** [1-2 sentences max - what the user asked/discussed, or "No user messages"]
+**Work:** [Bullet points - what was accomplished, max 3-5 bullets]
+**Outcome:** [1 sentence - result/status]
+
+## RULES:
+- NO headers, NO sections, NO elaborate structure
+- NO code blocks or command examples (just mention "updated X" or "ran Y")
+- NO step-by-step procedures (summarize as "configured X" or "fixed Y")
+- NO philosophical commentary or pattern analysis
+- If pure automation with no user messages, say so and keep to 50 words max
+- BREVITY IS CRITICAL - these chunks get combined later
+
+## EXAMPLE OUTPUT:
+**User:** Asked about calendar OAuth failures, frustrated this is recurring
+**Work:**
+- Investigated gog token storage (~/.config/gogcli/keyring/)
+- Found keyring empty after reboot
+- Tested re-authentication via SSH X11 forwarding
+**Outcome:** OAuth working again, but root cause (token persistence) still unclear
+
+## WHAT TO SKIP:
+- Routine heartbeats/health checks (unless failures)
+- Tool output details (just note "fetched X" or "searched Y")
+- Cron job execution logs (unless errors)
+- Full error messages (just note "X failed with Y error")"""
+
+
 def strip_telegram_envelope(text: str) -> str:
     """Strip Telegram/channel metadata envelope to extract actual user message.
     
@@ -1623,7 +1667,7 @@ def prepare_conversation_text_full(messages: list[Message]) -> tuple[str, str]:
     return user_section, assistant_section
 
 
-def chunk_messages_by_size(messages: list[Message], max_chunk_chars: int = 60000, max_single_msg_chars: int = 15000) -> list[list[Message]]:
+def chunk_messages_by_size(messages: list[Message], max_chunk_chars: int = 120000, max_single_msg_chars: int = 15000) -> list[list[Message]]:
     """Split messages into size-based chunks for incremental summarization.
     
     For days with heavy activity, we summarize in chunks then combine.
@@ -1783,22 +1827,91 @@ Write with the structure: Overview → User Discussions → Technical Work → O
 import subprocess
 
 
+def _extract_text_from_openclaw_response(output: dict) -> Optional[str]:
+    """Extract text content from various OpenClaw response formats.
+    
+    OpenClaw agent --json can return different structures depending on
+    the model and response type. This function handles all known formats:
+    
+    1. result.payloads[0].text - Standard format
+    2. result.payloads[0].content[0].text - Nested content format  
+    3. message.content[0].text - Direct message format
+    4. response - Simple response key
+    5. text - Direct text key
+    6. output - Direct output key
+    """
+    if not isinstance(output, dict):
+        return None
+    
+    # Format 1: result.payloads[0].text (most common)
+    if 'result' in output and isinstance(output['result'], dict):
+        result = output['result']
+        payloads = result.get('payloads', [])
+        if payloads and isinstance(payloads, list) and len(payloads) > 0:
+            payload = payloads[0]
+            if isinstance(payload, dict):
+                # Direct text in payload
+                if 'text' in payload and payload['text']:
+                    return payload['text']
+                # Nested content array in payload
+                if 'content' in payload and isinstance(payload['content'], list):
+                    for block in payload['content']:
+                        if isinstance(block, dict) and block.get('type') == 'text':
+                            text = block.get('text', '')
+                            if text:
+                                return text
+    
+    # Format 2: message.content[0].text
+    if 'message' in output:
+        msg = output['message']
+        if isinstance(msg, dict) and 'content' in msg:
+            content = msg['content']
+            if isinstance(content, list) and len(content) > 0:
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        text = block.get('text', '')
+                        if text:
+                            return text
+                # Try first block directly
+                first = content[0]
+                if isinstance(first, dict) and 'text' in first:
+                    return first['text']
+            elif isinstance(content, str):
+                return content
+    
+    # Format 3: Simple top-level keys
+    for key in ['response', 'text', 'output', 'content']:
+        if key in output:
+            val = output[key]
+            if isinstance(val, str) and val.strip():
+                return val
+    
+    return None
+
+
 def summarize_with_openclaw(
     log_date: date,
     messages: list[Message],
     transitions: list[ModelTransition],
     existing_content: Optional[str] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    is_chunk: bool = False
 ) -> str:
     """Use OpenClaw's sessions_spawn to summarize via the user's configured model.
 
     This is the preferred method as it uses the user's existing OpenClaw setup
     and doesn't require separate API keys.
+    
+    Args:
+        is_chunk: If True, use concise CHUNK_SYSTEM_PROMPT for time-block summaries
     """
     user_prompt = _build_summarization_prompt(log_date, messages, transitions, existing_content)
 
+    # Use concise prompt for chunks, full prompt for day summaries
+    system_prompt = CHUNK_SYSTEM_PROMPT if is_chunk else MEMORY_SYSTEM_PROMPT
+
     # Combine system prompt and user prompt for the task
-    full_prompt = f"""{MEMORY_SYSTEM_PROMPT}
+    full_prompt = f"""{system_prompt}
 
 ---
 
@@ -1813,16 +1926,12 @@ def summarize_with_openclaw(
         f.write(full_prompt)
         prompt_file = f.name
 
+    # Timeout configuration: 45 minutes for heavy days with chunked summarization
+    # Heavy days (800+ messages) can take 10-15 minutes for full summarization
+    AGENT_TIMEOUT_SECONDS = 2700  # 45 minutes
+    SUBPROCESS_TIMEOUT_SECONDS = 2760  # 46 minutes (slightly more than agent timeout)
+    
     try:
-        # Build the openclaw agent command
-        # Use --local for direct execution without delivery, --json for structured output
-        cmd = [
-            "openclaw", "agent",
-            "--message", f"$(cat {prompt_file})",
-            "--json",
-            "--timeout", "300"
-        ]
-
         # Use openclaw agent with a unique session ID to avoid locking the main session
         import time
         session_id = f"memory-sync-{int(time.time())}"
@@ -1831,14 +1940,33 @@ def summarize_with_openclaw(
             "--session-id", session_id,
             "--message", full_prompt,
             "--json",
-            "--timeout", "300"
+            "--timeout", str(AGENT_TIMEOUT_SECONDS)
         ]
+        
+        # Model override via dedicated agent
+        # Pre-configured agents allow model selection without modifying main agent:
+        #   - memory-sync: google/gemini-2.5-pro (large context, fast)
+        # Create with: openclaw agents add memory-sync --model google/gemini-2.5-pro --workspace ~/.openclaw/workspace --non-interactive
+        # 
+        # Model aliases supported: gemini, opus, sonnet, gpt, kimi
+        # Full model IDs also work: google/gemini-2.5-pro, anthropic/claude-opus-4-5, etc.
+        if model:
+            model_lower = model.lower()
+            if model_lower in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash'):
+                cmd.extend(["--agent", "memory-sync"])
+                print(f"  Using memory-sync agent (Gemini)", file=sys.stderr)
+            else:
+                # For other models, warn that they need a dedicated agent configured
+                print(f"  Warning: --model {model} specified but no dedicated agent configured.", file=sys.stderr)
+                print(f"  Using default agent. To use {model}, run:", file=sys.stderr)
+                print(f"    openclaw agents add memory-sync-{model_lower.replace('/', '-')} --model {model} --workspace ~/.openclaw/workspace --non-interactive", file=sys.stderr)
 
+        print(f"  Running OpenClaw agent (timeout: {AGENT_TIMEOUT_SECONDS}s)...", file=sys.stderr)
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=360,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
             env={**os.environ}
         )
 
@@ -1846,41 +1974,21 @@ def summarize_with_openclaw(
             # Parse JSON output to extract the agent's response
             try:
                 output = json.loads(result.stdout)
-                # The output structure: {status, result: {payloads: [{text: "..."}]}}
-                if isinstance(output, dict):
-                    # Primary path: result.payloads[0].text
-                    if 'result' in output and isinstance(output['result'], dict):
-                        payloads = output['result'].get('payloads', [])
-                        if payloads and isinstance(payloads, list) and len(payloads) > 0:
-                            text = payloads[0].get('text', '')
-                            if text:
-                                return sanitize_content(text.strip())
-                    # Fallback: try 'message' key
-                    if 'message' in output:
-                        msg = output['message']
-                        if isinstance(msg, dict) and 'content' in msg:
-                            content = msg['content']
-                            if isinstance(content, list) and len(content) > 0:
-                                text = content[0].get('text', '')
-                                return sanitize_content(text.strip())
-                            elif isinstance(content, str):
-                                return sanitize_content(content.strip())
-                    # Try 'response' or 'text' keys
-                    if 'response' in output:
-                        return sanitize_content(str(output['response']).strip())
-                    if 'text' in output:
-                        return sanitize_content(str(output['text']).strip())
-                # Fallback: return the raw stdout if it looks like text
-                raise RuntimeError(f"Could not parse OpenClaw response: {result.stdout[:500]}")
-            except json.JSONDecodeError:
+                text = _extract_text_from_openclaw_response(output)
+                if text:
+                    return sanitize_content(text.strip())
+                # If we couldn't extract text, log the structure for debugging
+                print(f"  Warning: Could not extract text from response. Keys: {list(output.keys()) if isinstance(output, dict) else type(output)}", file=sys.stderr)
+                raise RuntimeError(f"Could not parse OpenClaw response structure: {json.dumps(output)[:500]}")
+            except json.JSONDecodeError as e:
                 # Not JSON - maybe plain text response
                 if result.stdout.strip():
                     return sanitize_content(result.stdout.strip())
-                raise RuntimeError(f"OpenClaw returned non-JSON output: {result.stdout[:200]}")
+                raise RuntimeError(f"OpenClaw returned non-JSON output: {result.stdout[:200]} (parse error: {e})")
         else:
-            raise RuntimeError(f"openclaw agent failed: {result.stderr or result.stdout}")
+            raise RuntimeError(f"openclaw agent failed (exit {result.returncode}): {result.stderr or result.stdout}")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("OpenClaw summarization timed out after 360 seconds")
+        raise RuntimeError(f"OpenClaw summarization timed out after {SUBPROCESS_TIMEOUT_SECONDS} seconds")
     except FileNotFoundError:
         raise RuntimeError(
             "openclaw CLI not found. "
@@ -1901,9 +2009,14 @@ def summarize_with_openai_package(
     transitions: list[ModelTransition],
     existing_content: Optional[str] = None,
     model: Optional[str] = None,
-    provider: str = "openai"
+    provider: str = "openai",
+    is_chunk: bool = False
 ) -> str:
-    """Fallback summarization using OpenAI package (works with OpenAI and Anthropic APIs)."""
+    """Fallback summarization using OpenAI package (works with OpenAI and Anthropic APIs).
+    
+    Args:
+        is_chunk: If True, use concise CHUNK_SYSTEM_PROMPT for time-block summaries
+    """
     try:
         from openai import OpenAI
     except ImportError:
@@ -1935,14 +2048,19 @@ def summarize_with_openai_package(
     client = OpenAI(api_key=api_key, base_url=base_url)
 
     user_prompt = _build_summarization_prompt(log_date, messages, transitions, existing_content)
+    
+    # Use concise prompt for chunks, full prompt for day summaries
+    system_prompt = CHUNK_SYSTEM_PROMPT if is_chunk else MEMORY_SYSTEM_PROMPT
+    # Chunks should be much shorter
+    max_tokens = 800 if is_chunk else 3500
 
     response = client.chat.completions.create(
         model=model or default_model,
         messages=[
-            {"role": "system", "content": MEMORY_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        max_tokens=3500,
+        max_tokens=max_tokens,
         temperature=0.3
     )
 
@@ -1956,19 +2074,25 @@ def summarize_chunked(
     existing_content: Optional[str] = None,
     model: Optional[str] = None,
     backend: str = 'openclaw',
-    max_chunk_chars: int = 60000,
+    max_chunk_chars: int = 120000,
     max_context_chars: int = 80000
 ) -> str:
     """Summarize large days by chunking into size-based segments.
     
     For days with heavy activity that would exceed context limits:
     1. Split messages into size-based chunks (each under max_chunk_chars)
-    2. Summarize each chunk independently
-    3. Combine chunk summaries into final daily summary
+    2. Summarize each chunk independently (using fast Haiku model)
+    3. Combine chunk summaries into final daily summary (using Sonnet)
     
-    This ensures NO TRUNCATION of individual messages.
+    For light days (<= SIMPLE_SUMMARY_THRESHOLD messages), uses simple summarization.
     """
-    # Check if we need chunking
+    # Light days: skip chunking entirely, use simple summarization
+    if len(messages) <= SIMPLE_SUMMARY_THRESHOLD:
+        print(f"  Light day ({len(messages)} messages) - using simple summarization...")
+        summarizer = get_summarizer(backend)
+        return summarizer(log_date, messages, transitions, existing_content, model)
+    
+    # Check if we need chunking based on size
     user_section, assistant_section = prepare_conversation_text_full(messages)
     total_chars = len(user_section) + len(assistant_section)
     
@@ -1978,13 +2102,25 @@ def summarize_chunked(
         return summarizer(log_date, messages, transitions, existing_content, model)
     
     # Need chunking - use SIZE-based chunking to guarantee each chunk fits
-    print(f"  Large day ({total_chars:,} chars) - using chunked summarization...")
+    print(f"  Large day ({len(messages)} messages, {total_chars:,} chars) - using chunked summarization...")
     
     chunks = chunk_messages_by_size(messages, max_chunk_chars)
     print(f"  Split into {len(chunks)} chunks (max {max_chunk_chars:,} chars each)")
     
     chunk_summaries = []
-    summarizer = get_summarizer(backend)
+    # Use concise chunk summarizer with FAST model (Haiku for chunks via Anthropic API)
+    # is_chunk=True produces brief bullet-point summaries
+    # Note: Use 'anthropic' backend for chunks because openclaw CLI doesn't support --model override
+    # Synthesis will use the main 'backend' (openclaw) with default Sonnet
+    try:
+        chunk_summarizer = get_summarizer('anthropic', is_chunk=True)
+        chunk_model = DEFAULT_CHUNK_MODEL  # Haiku for speed
+        print(f"  Using Anthropic API with {chunk_model} for fast chunk summarization...")
+    except Exception as e:
+        # Fall back to OpenClaw backend if Anthropic not available
+        print(f"  Anthropic API not available ({e}), using OpenClaw backend...")
+        chunk_summarizer = get_summarizer(backend, is_chunk=True)
+        chunk_model = None
     
     # Parallel chunk summarization using ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1998,7 +2134,8 @@ def summarize_chunked(
         chunk_end = chunk[-1].timestamp.strftime('%H:%M')
         print(f"  [Thread {threading.current_thread().name}] Summarizing chunk {i+1}/{len(chunks)} ({chunk_start}-{chunk_end}, {len(chunk)} messages)...")
         try:
-            summary = summarizer(log_date, chunk, [], None, model)
+            # Use Haiku for chunks (fast), synthesis will use Sonnet via OpenClaw
+            summary = chunk_summarizer(log_date, chunk, [], None, chunk_model)
             return (i, f"### Time Block {i+1}: {chunk_start}-{chunk_end}\n\n{summary}")
         except Exception as e:
             print(f"  [Thread] Chunk {i+1} failed: {e}")
@@ -2025,8 +2162,109 @@ def summarize_chunked(
     
     day_name = log_date.strftime('%A, %Y-%m-%d')
     
-    # Final synthesis prompt
-    synthesis_prompt = f"""You have summarized a large day ({day_name}) in {len(chunks)} time-based chunks.
+    # Use OpenClaw for synthesis
+    import subprocess
+    import json
+    import time as time_module
+    
+    # Synthesis timeout: 10 minutes per synthesis call
+    SYNTHESIS_TIMEOUT = 600
+    # Max chars for a single synthesis call (stay well under shell arg limits)
+    MAX_SYNTHESIS_CHARS = 100000  # ~100KB safe for command line
+    
+    def run_synthesis(prompt_text: str, session_suffix: str = "") -> Optional[str]:
+        """Run a single synthesis call via OpenClaw agent."""
+        session_id = f"memory-sync-synthesis-{int(time_module.time())}{session_suffix}"
+        cmd = [
+            "openclaw", "agent",
+            "--session-id", session_id,
+            "--message", prompt_text,
+            "--json",
+            "--timeout", str(SYNTHESIS_TIMEOUT)
+        ]
+        
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=SYNTHESIS_TIMEOUT + 60,
+                env={**os.environ}
+            )
+            
+            if result.returncode == 0:
+                output = json.loads(result.stdout)
+                return _extract_text_from_openclaw_response(output)
+        except Exception as e:
+            print(f"  Synthesis call failed: {e}", file=sys.stderr)
+        return None
+    
+    # Check if we need hierarchical synthesis (combined chunks too large)
+    if len(combined_chunks) > MAX_SYNTHESIS_CHARS:
+        print(f"  Large synthesis needed ({len(combined_chunks):,} chars) - using hierarchical approach...", file=sys.stderr)
+        
+        # Group chunks into batches that fit in synthesis calls
+        CHUNKS_PER_BATCH = 8  # ~8 chunks × ~10KB each = ~80KB per batch
+        batches = []
+        for i in range(0, len(chunk_summaries), CHUNKS_PER_BATCH):
+            batches.append(chunk_summaries[i:i + CHUNKS_PER_BATCH])
+        
+        print(f"  Synthesizing {len(batches)} batches of chunks...", file=sys.stderr)
+        
+        # First pass: synthesize each batch
+        batch_summaries = []
+        for i, batch in enumerate(batches):
+            batch_text = "\n\n---\n\n".join(batch)
+            batch_prompt = f"""Synthesize these {len(batch)} time-block summaries from {day_name} into a single cohesive section.
+Preserve all user conversations, decisions, and key technical details.
+Write in past tense. Be detailed but remove redundancy.
+
+{batch_text}
+
+---
+
+Write a synthesized summary (target: 1000-2000 words) covering all important content from these time blocks."""
+            
+            print(f"  Batch {i+1}/{len(batches)}...", file=sys.stderr)
+            batch_result = run_synthesis(batch_prompt, f"-batch{i}")
+            
+            if batch_result:
+                batch_summaries.append(f"## Part {i+1} (Time Blocks {i*CHUNKS_PER_BATCH + 1}-{min((i+1)*CHUNKS_PER_BATCH, len(chunk_summaries))})\n\n{batch_result}")
+            else:
+                # Fallback: use raw chunks for this batch
+                batch_summaries.append(f"## Part {i+1} (Time Blocks {i*CHUNKS_PER_BATCH + 1}-{min((i+1)*CHUNKS_PER_BATCH, len(chunk_summaries))})\n\n{batch_text}")
+        
+        # Second pass: final synthesis of batch summaries
+        combined_batches = "\n\n---\n\n".join(batch_summaries)
+        
+        if len(combined_batches) <= MAX_SYNTHESIS_CHARS:
+            final_prompt = f"""You have {len(batches)} synthesized sections from {day_name}.
+Create the final daily memory file by merging these sections.
+
+{combined_batches}
+
+---
+
+Create the final daily summary with the standard structure:
+1. Overview (2-5 sentences covering the whole day)
+2. User Conversations & Decisions (consolidated from all sections)
+3. Key Accomplishments / Technical Changes
+4. Notable Findings / Insights / Patterns
+5. Open Loops / Next Actions
+
+Merge related topics across sections. Preserve all important user discussions."""
+            
+            print(f"  Final synthesis of {len(batches)} batch summaries...", file=sys.stderr)
+            final_result = run_synthesis(final_prompt, "-final")
+            
+            if final_result:
+                return sanitize_content(final_result.strip())
+        
+        # Fallback: return batch summaries without final synthesis
+        print(f"  Final synthesis skipped (too large), returning batch summaries", file=sys.stderr)
+        return f"# {day_name}\n\n*Hierarchical summary ({len(batches)} batches)*\n\n{combined_batches}"
+    
+    else:
+        # Small enough for single synthesis
+        synthesis_prompt = f"""You have summarized a large day ({day_name}) in {len(chunks)} time-based chunks.
 Now synthesize these chunk summaries into a single coherent daily memory file.
 
 CHUNK SUMMARIES:
@@ -2045,46 +2283,33 @@ Create the final daily summary with the standard structure:
 Merge related topics across chunks. Preserve all important user discussions.
 Remove redundancy but keep detail for significant events."""
 
-    # Use OpenClaw for synthesis
-    import subprocess
-    import json
-    import time as time_module
-    
-    session_id = f"memory-sync-synthesis-{int(time_module.time())}"
-    cmd = [
-        "openclaw", "agent",
-        "--session-id", session_id,
-        "--message", synthesis_prompt,
-        "--json",
-        "--timeout", "300"
-    ]
-    
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=360, env={**os.environ})
-        if result.returncode == 0:
-            output = json.loads(result.stdout)
-            if 'result' in output and 'payloads' in output['result']:
-                payloads = output['result']['payloads']
-                if payloads:
-                    return sanitize_content(payloads[0].get('text', '').strip())
+        print(f"  Synthesizing {len(chunks)} chunk summaries...", file=sys.stderr)
+        result = run_synthesis(synthesis_prompt)
+        
+        if result:
+            return sanitize_content(result.strip())
+        
         # Fallback: return combined chunks
+        print(f"  Synthesis failed, returning raw chunks", file=sys.stderr)
         return f"# {day_name}\n\n*Chunked summary (synthesis failed)*\n\n{combined_chunks}"
-    except Exception as e:
-        print(f"  Synthesis failed: {e}")
-        return f"# {day_name}\n\n*Chunked summary (synthesis failed: {e})*\n\n{combined_chunks}"
 
 
-def get_summarizer(backend: str):
-    """Factory function to get the appropriate summarizer based on backend choice."""
+def get_summarizer(backend: str, is_chunk: bool = False):
+    """Factory function to get the appropriate summarizer based on backend choice.
+    
+    Args:
+        backend: Which LLM backend to use (openclaw, openai, anthropic)
+        is_chunk: If True, returns a summarizer that uses concise chunk prompts
+    """
 
     def openclaw_summarizer(log_date, messages, transitions, existing_content=None, model=None):
-        return summarize_with_openclaw(log_date, messages, transitions, existing_content, model)
+        return summarize_with_openclaw(log_date, messages, transitions, existing_content, model, is_chunk=is_chunk)
 
     def openai_summarizer(log_date, messages, transitions, existing_content=None, model=None):
-        return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="openai")
+        return summarize_with_openai_package(log_date, messages, transitions, existing_content, model, provider="openai", is_chunk=is_chunk)
 
     def anthropic_summarizer(log_date, messages, transitions, existing_content=None, model=None):
-        return summarize_with_anthropic(log_date, messages, transitions, existing_content, model)
+        return summarize_with_anthropic(log_date, messages, transitions, existing_content, model, is_chunk=is_chunk)
 
     backends = {
         'openclaw': openclaw_summarizer,
@@ -2103,9 +2328,14 @@ def summarize_with_anthropic(
     messages: list[Message],
     transitions: list[ModelTransition],
     existing_content: Optional[str] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    is_chunk: bool = False
 ) -> str:
-    """Summarize a day's conversation using Anthropic API."""
+    """Summarize a day's conversation using Anthropic API.
+    
+    Args:
+        is_chunk: If True, use concise CHUNK_SYSTEM_PROMPT for time-block summaries
+    """
     try:
         import anthropic
     except ImportError:
@@ -2163,10 +2393,15 @@ Write with the structure: Overview → User Discussions → Technical Work → O
         if hand_written:
             user_prompt += f"\n\nExisting hand-written notes (PRESERVE AND INCORPORATE):\n{hand_written}"
 
+    # Use concise prompt for chunks, full prompt for day summaries
+    system_prompt = CHUNK_SYSTEM_PROMPT if is_chunk else MEMORY_SYSTEM_PROMPT
+    # Chunks should be much shorter
+    max_tokens = 800 if is_chunk else 3500
+
     response = client.messages.create(
         model=model,
-        max_tokens=3500,
-        system=MEMORY_SYSTEM_PROMPT,
+        max_tokens=max_tokens,
+        system=system_prompt,
         messages=[{
             "role": "user",
             "content": user_prompt
@@ -2278,9 +2513,15 @@ def generate_summarized_memory(
         is_valid, violations = validate_no_secrets(content)
 
         if not is_valid:
+            # Write to .rejected file for manual review
+            rejected_path = output_path.with_suffix('.md.rejected')
+            rejected_path.parent.mkdir(parents=True, exist_ok=True)
+            rejected_path.write_text(content)
+            print(f"Draft saved to: {rejected_path}", file=sys.stderr)
+            print("⚠️  MANUAL REVIEW REQUIRED: Edit the .rejected file to remove secrets, then rename to .md", file=sys.stderr)
             raise ValueError(
-                f"Memory file still contains secrets after sanitization: {violations}. "
-                "Refusing to write file."
+                f"Memory file contains secrets after sanitization: {violations}. "
+                f"Draft saved to {rejected_path} for manual editing."
             )
 
         print("Content sanitized successfully.", file=sys.stderr)
