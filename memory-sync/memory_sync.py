@@ -2108,14 +2108,20 @@ def summarize_chunked(
             print(f"  Truncating tool outputs...", file=sys.stderr)
             
             # Truncate tool results aggressively (500 chars each)
+            # Note: role is 'toolResult' in Message dataclass
             truncated_messages = []
             for msg in messages:
-                if msg.role == 'tool_result' and len(msg.content) > 500:
+                if msg.role == 'toolResult' and len(msg.text_content) > 500:
+                    # Create a copy with truncated content
                     truncated_msg = Message(
+                        id=msg.id,
                         timestamp=msg.timestamp,
                         role=msg.role,
-                        content=msg.content[:500] + "\n[...truncated...]",
-                        model=msg.model
+                        text_content=msg.text_content[:500] + "\n[...truncated...]",
+                        model=msg.model,
+                        provider=msg.provider,
+                        has_tool_calls=msg.has_tool_calls,
+                        has_thinking=msg.has_thinking
                     )
                     truncated_messages.append(truncated_msg)
                 else:
