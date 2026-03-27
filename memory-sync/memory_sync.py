@@ -2096,6 +2096,13 @@ def summarize_chunked(
     user_section, assistant_section = prepare_conversation_text_full(messages)
     total_chars = len(user_section) + len(assistant_section)
     
+    # Gemini has 1M+ token context - skip chunking entirely and send full day
+    use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
+    if use_gemini:
+        print(f"  Using Gemini ({total_chars:,} chars) - skipping chunking (1M+ context window)...")
+        summarizer = get_summarizer(backend)
+        return summarizer(log_date, messages, transitions, existing_content, model)
+    
     if total_chars <= max_context_chars:
         # Fits in context - use normal summarization
         summarizer = get_summarizer(backend)
