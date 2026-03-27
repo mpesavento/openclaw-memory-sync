@@ -2172,7 +2172,7 @@ def summarize_chunked(
     # Max chars for a single synthesis call (stay well under shell arg limits)
     MAX_SYNTHESIS_CHARS = 100000  # ~100KB safe for command line
     
-    def run_synthesis(prompt_text: str, session_suffix: str = "") -> Optional[str]:
+    def run_synthesis(prompt_text: str, session_suffix: str = "", use_gemini: bool = False) -> Optional[str]:
         """Run a single synthesis call via OpenClaw agent."""
         session_id = f"memory-sync-synthesis-{int(time_module.time())}{session_suffix}"
         cmd = [
@@ -2182,6 +2182,11 @@ def summarize_chunked(
             "--json",
             "--timeout", str(SYNTHESIS_TIMEOUT)
         ]
+        
+        # Use memory-sync agent (Gemini) if requested
+        if use_gemini:
+            cmd.extend(["--agent", "memory-sync"])
+            print(f"    Using Gemini for synthesis...", file=sys.stderr)
         
         try:
             result = subprocess.run(
@@ -2224,7 +2229,8 @@ Write in past tense. Be detailed but remove redundancy.
 Write a synthesized summary (target: 1000-2000 words) covering all important content from these time blocks."""
             
             print(f"  Batch {i+1}/{len(batches)}...", file=sys.stderr)
-            batch_result = run_synthesis(batch_prompt, f"-batch{i}")
+            use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
+            batch_result = run_synthesis(batch_prompt, f"-batch{i}", use_gemini=use_gemini)
             
             if batch_result:
                 batch_summaries.append(f"## Part {i+1} (Time Blocks {i*CHUNKS_PER_BATCH + 1}-{min((i+1)*CHUNKS_PER_BATCH, len(chunk_summaries))})\n\n{batch_result}")
@@ -2253,7 +2259,7 @@ Create the final daily summary with the standard structure:
 Merge related topics across sections. Preserve all important user discussions."""
             
             print(f"  Final synthesis of {len(batches)} batch summaries...", file=sys.stderr)
-            final_result = run_synthesis(final_prompt, "-final")
+            final_result = run_synthesis(final_prompt, "-final", use_gemini=use_gemini)
             
             if final_result:
                 return sanitize_content(final_result.strip())
@@ -2284,7 +2290,7 @@ Merge related topics across chunks. Preserve all important user discussions.
 Remove redundancy but keep detail for significant events."""
 
         print(f"  Synthesizing {len(chunks)} chunk summaries...", file=sys.stderr)
-        result = run_synthesis(synthesis_prompt)
+        result = run_synthesis(synthesis_prompt, use_gemini=use_gemini)
         
         if result:
             return sanitize_content(result.strip())
