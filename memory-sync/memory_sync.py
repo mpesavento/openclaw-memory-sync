@@ -624,16 +624,32 @@ def get_model_snapshots(path: Path) -> Iterator[dict]:
 # SESSION DISCOVERY
 # =============================================================================
 
-def find_session_files(sessions_dir: Path) -> list[Path]:
-    """Find all session JSONL files in a directory."""
+def find_session_files(sessions_dir: Path, exclude_internal: bool = True) -> list[Path]:
+    """Find all session JSONL files in a directory.
+    
+    Args:
+        sessions_dir: Directory containing session files
+        exclude_internal: If True, exclude internal sessions (memory-sync, subagents, etc.)
+                         These contain processing artifacts, not user conversations.
+    """
     if not sessions_dir.exists():
         return []
+
+    # Internal session patterns to exclude (not user conversations)
+    INTERNAL_PATTERNS = [
+        'memory-sync',      # memory-sync summarization sessions
+        'subagent',         # spawned subagents
+        'memory-sync-synthesis',  # synthesis sessions
+    ]
 
     files = []
     # Match *.jsonl and also *.jsonl.reset.* and *.jsonl.deleted.* (moved-aside sessions)
     for pattern in ['*.jsonl', '*.jsonl.reset.*', '*.jsonl.deleted.*']:
         for f in sessions_dir.glob(pattern):
             if f.suffix == '.lock' or f.name.endswith('.jsonl.lock'):
+                continue
+            # Skip internal sessions if requested
+            if exclude_internal and any(pat in f.name for pat in INTERNAL_PATTERNS):
                 continue
             if f not in files:  # Avoid duplicates
                 files.append(f)
@@ -1621,7 +1637,7 @@ def strip_telegram_envelope(text: str) -> str:
     return text
 
 
-def prepare_conversation_text_full(messages: list[Message]) -> tuple[str, str]:
+def prepare_conversation_text_full(messages: list[Message], include_tool_results: bool = False) -> tuple[str, str]:
     """Prepare FULL conversation text without truncation.
     
     Returns (user_section, assistant_section) as separate strings.
@@ -1629,17 +1645,33 @@ def prepare_conversation_text_full(messages: list[Message]) -> tuple[str, str]:
     
     Separates USER messages into a priority section to ensure they're not lost
     when there's heavy automated/assistant activity.
+    
+    Args:
+        include_tool_results: If False (default), skip toolResult messages entirely.
+                             Tool results are raw data dumps that bloat summaries
+                             without adding meaningful context.
     """
     # Separate user messages from others
     user_lines = []
     other_lines = []
     
+    # Maximum size for any single message (truncate huge pastes)
+    MAX_MSG_CHARS = 5000
+    
     for msg in messages:
+        # Skip tool results by default - they're raw data, not conversation
+        if msg.role == 'toolResult' and not include_tool_results:
+            continue
+            
         raw_content = msg.text_content
         
         # For user messages, strip Telegram envelope to get actual content
         if msg.role == 'user':
             raw_content = strip_telegram_envelope(raw_content)
+        
+        # Truncate excessively large messages (huge pastes, file dumps)
+        if len(raw_content) > MAX_MSG_CHARS:
+            raw_content = raw_content[:MAX_MSG_CHARS] + f"\n[...truncated {len(raw_content) - MAX_MSG_CHARS:,} chars...]"
         
         sanitized_content = sanitize_content(raw_content)
         time_str = msg.timestamp.strftime('%H:%M')
@@ -1649,7 +1681,6 @@ def prepare_conversation_text_full(messages: list[Message]) -> tuple[str, str]:
         # Skip cron job triggers and system messages for the main log
         is_cron = sanitized_content.startswith('[cron:') or 'A scheduled reminder has been triggered' in sanitized_content
         
-        # FULL content - no truncation
         line = f"[{time_str}] {role}{model_str}: {sanitized_content}"
         
         if msg.role == 'user' and not is_cron:
