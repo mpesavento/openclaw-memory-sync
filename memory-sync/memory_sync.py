@@ -2096,12 +2096,47 @@ def summarize_chunked(
     user_section, assistant_section = prepare_conversation_text_full(messages)
     total_chars = len(user_section) + len(assistant_section)
     
-    # Gemini has 1M+ token context - skip chunking entirely and send full day
+    # Gemini has 1M+ token context, BUT shell ARG_MAX is ~2MB
+    # So we're limited by command line length, not model context
     use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
+    SHELL_ARG_MAX = 1_500_000  # Safe limit under 2MB ARG_MAX
+    
     if use_gemini:
-        print(f"  Using Gemini ({total_chars:,} chars) - skipping chunking (1M+ context window)...")
-        summarizer = get_summarizer(backend)
-        return summarizer(log_date, messages, transitions, existing_content, model)
+        # First, try to fit by truncating tool outputs
+        if total_chars > SHELL_ARG_MAX:
+            print(f"  Day too large for CLI ({total_chars:,} chars > {SHELL_ARG_MAX:,})", file=sys.stderr)
+            print(f"  Truncating tool outputs...", file=sys.stderr)
+            
+            # Truncate tool results aggressively (500 chars each)
+            truncated_messages = []
+            for msg in messages:
+                if msg.role == 'tool_result' and len(msg.content) > 500:
+                    truncated_msg = Message(
+                        timestamp=msg.timestamp,
+                        role=msg.role,
+                        content=msg.content[:500] + "\n[...truncated...]",
+                        model=msg.model
+                    )
+                    truncated_messages.append(truncated_msg)
+                else:
+                    truncated_messages.append(msg)
+            
+            # Recalculate size
+            user_section, assistant_section = prepare_conversation_text_full(truncated_messages)
+            new_total = len(user_section) + len(assistant_section)
+            print(f"  After truncation: {new_total:,} chars", file=sys.stderr)
+            
+            if new_total <= SHELL_ARG_MAX:
+                print(f"  Using Gemini (truncated) - skipping chunking...", file=sys.stderr)
+                summarizer = get_summarizer(backend)
+                return summarizer(log_date, truncated_messages, transitions, existing_content, model)
+            else:
+                print(f"  Still too large ({new_total:,} chars) - falling back to chunked summarization", file=sys.stderr)
+                # Fall through to chunked processing below
+        else:
+            print(f"  Using Gemini ({total_chars:,} chars) - skipping chunking...", file=sys.stderr)
+            summarizer = get_summarizer(backend)
+            return summarizer(log_date, messages, transitions, existing_content, model)
     
     if total_chars <= max_context_chars:
         # Fits in context - use normal summarization
