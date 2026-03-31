@@ -44,11 +44,14 @@ pip install click
 # Check for gaps
 python ~/.openclaw/skills/memory-sync/memory_sync.py compare
 
-# Backfill with Gemini (recommended for heavy days)
-python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --today --summarize --model gemini --preserve
-
-# Backfill with default model (Sonnet)
+# Backfill today (uses Gemini by default)
 python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --today --summarize --preserve
+
+# Backfill specific date
+python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --date 2026-03-22 --summarize --preserve
+
+# Use Sonnet instead of Gemini
+python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --today --summarize --model sonnet --preserve
 ```
 
 ## Commands
@@ -74,8 +77,8 @@ python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --today --summariz
 --dry-run                # Preview without creating files
 
 # Model selection (with openclaw backend)
---model gemini           # Use Gemini 2.5 Pro (1M+ context, handles huge days)
---model sonnet           # Use Claude Sonnet (default)
+--model gemini           # Use Gemini 2.5 Pro (DEFAULT - 1M+ context, handles huge days)
+--model sonnet           # Use Claude Sonnet
 --model opus             # Use Claude Opus
 
 # Backend selection (openclaw is default)
@@ -84,17 +87,15 @@ python ~/.openclaw/skills/memory-sync/memory_sync.py backfill --today --summariz
 --summarize-backend openai      # Direct OpenAI API (requires OPENAI_API_KEY)
 ```
 
-## Gemini Setup
+## Gemini Setup (Required for Default)
 
-To use Gemini for summarization, create a dedicated agent:
+Gemini is the default model. Create the memory-sync agent first:
 
 ```bash
 openclaw agents add memory-sync --model google/gemini-2.5-pro --workspace ~/.openclaw/workspace --non-interactive
 ```
 
-Then use `--model gemini` with backfill commands.
-
-**Why Gemini?**
+**Why Gemini is Default:**
 - 1M+ token context window handles even massive days in one pass
 - No chunking needed = better coherence
 - Faster for heavy days (single call vs many chunk calls)
@@ -140,8 +141,8 @@ Messages from Telegram arrive wrapped in metadata - the tool extracts just the a
 ### Recommended Cron Job
 
 ```bash
-# 3am daily - yesterday only with Gemini
-0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --date $(date -d yesterday +%Y-%m-%d) --summarize --model gemini --preserve
+# 3am daily - yesterday only (Gemini is default)
+0 3 * * * cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --date $(date -d yesterday +%Y-%m-%d) --summarize --preserve
 ```
 
 ### OpenClaw Cron Setup
@@ -150,7 +151,7 @@ Messages from Telegram arrive wrapped in metadata - the tool extracts just the a
 openclaw cron add \
   --schedule "0 3 * * *" \
   --name "Nightly memory backfill" \
-  --task "cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --date \$(date -d yesterday +%Y-%m-%d) --summarize --model gemini --preserve"
+  --task "cd ~/.openclaw/skills/memory-sync && python memory_sync.py backfill --date \$(date -d yesterday +%Y-%m-%d) --summarize --preserve"
 ```
 
 ## Secret Sanitization

@@ -61,7 +61,7 @@ AUTO_GENERATED_FOOTER = '*Review and edit this draft to capture what\'s actually
 MIN_VALID_SIZE = 100  # bytes - minimum size for a memory file to be considered non-empty
 
 # Default LLM model for summarization
-DEFAULT_SUMMARIZE_MODEL = "claude-sonnet-4-5"
+DEFAULT_SUMMARIZE_MODEL = "gemini"  # Uses memory-sync agent with google/gemini-2.5-pro
 # Faster/cheaper model for individual chunk summaries (chunks get synthesized later)
 DEFAULT_CHUNK_MODEL = "claude-3-haiku-20240307"
 # Message threshold below which we use simple summarization (no chunking)
@@ -2883,7 +2883,7 @@ def compare(sessions_dir, memory_dir, include_today):
               type=click.Choice(['openclaw', 'openai', 'anthropic']),
               default='openclaw',
               help="Backend for LLM summarization (default: openclaw - uses your gateway's configured models)")
-@click.option("--model", default=None, help=f"Model override for summarization (default varies by backend)")
+@click.option("--model", default="gemini", help="Model for summarization (default: gemini - uses memory-sync agent with large context)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 @click.option("--memory-dir", default=None, help="Path to memory files directory")
 def backfill(target_date, backfill_all, today, since_date, until_date, incremental, dry_run, force, preserve, summarize, summarize_backend, model, sessions_dir, memory_dir):
@@ -3164,7 +3164,7 @@ def extract(target_date, query, model, output_format, sessions_dir):
               type=click.Choice(['openclaw', 'openai', 'anthropic']),
               default='openclaw',
               help="Backend for LLM summarization (default: openclaw - uses your gateway's configured models)")
-@click.option("--model", default=None, help="Model override for summarization (default varies by backend)")
+@click.option("--model", default="gemini", help="Model for summarization (default: gemini - uses memory-sync agent with large context)")
 @click.option("--output", default=None, help="Write to file (default: stdout)")
 @click.option("--sessions-dir", default=None, help="Path to session logs directory")
 def summarize(target_date, summarize_backend, model, output, sessions_dir):
