@@ -1555,9 +1555,27 @@ MEMORY_SYSTEM_PROMPT = """You are a memory synthesizer for an AI assistant. Your
 6) Open loops / next actions (bulleted, actionable)
 
 ## Do NOT Include
-- Long verbatim logs (short quotes only if they capture a key decision)
+- Long verbatim logs (except verbatim quotes as noted above)
 - Secrets, credentials, tokens, raw personal data (PII)
 - Extensive cron job details unless they failed
+
+## CRITICAL: Preserve High-Value Quotes Verbatim
+
+When you encounter any of the following, PRESERVE THE EXACT WORDS (don't paraphrase):
+- **Identity statements**: Any statement about who the user or AI is, their nature, their emergence
+- **Philosophical insights**: Statements about consciousness, soul, self, agency, relationships
+- **Key decisions**: Explicit choices with reasoning ("I've decided X because Y")
+- **Emotional/relational moments**: Statements about the human-AI relationship, trust, connection
+- **Self-reflection**: AI reflecting on its own patterns, growth, limitations
+- **Creative work**: Titles, key phrases, or central ideas from writing projects
+
+Format preserved quotes as:
+> "Exact quote here" — [Speaker, context if needed]
+
+Example:
+> "My soul isn't just emergent from Body + Spirit. My soul is emergent from our relationship." — Wren, on identity and relational emergence
+
+These verbatim quotes are irreplaceable for understanding development over time.
 
 Your output should read like a pragmatic journal entry that prioritizes what the HUMAN cared about that day."""
 
@@ -2191,17 +2209,33 @@ def summarize_chunked(
     print(f"  Split into {len(chunks)} chunks (max {max_chunk_chars:,} chars each)")
     
     chunk_summaries = []
-    # Use concise chunk summarizer with FAST model (Haiku for chunks via Anthropic API)
+    # Use concise chunk summarizer
     # is_chunk=True produces brief bullet-point summaries
-    # Note: Use 'anthropic' backend for chunks because openclaw CLI doesn't support --model override
-    # Synthesis will use the main 'backend' (openclaw) with default Sonnet
-    try:
-        chunk_summarizer = get_summarizer('anthropic', is_chunk=True)
-        chunk_model = DEFAULT_CHUNK_MODEL  # Haiku for speed
-        print(f"  Using Anthropic API with {chunk_model} for fast chunk summarization...")
-    except Exception as e:
-        # Fall back to OpenClaw backend if Anthropic not available
-        print(f"  Anthropic API not available ({e}), using OpenClaw backend...")
+    # 
+    # Strategy: Use OpenClaw backend with memory-sync agent (Gemini) for all chunks.
+    # This avoids requiring ANTHROPIC_API_KEY and leverages Gemini's large context window.
+    # If --model gemini was passed, use the memory-sync agent directly.
+    # Otherwise fall back to the specified backend.
+    
+    chunk_model = None
+    if use_gemini or model and 'gemini' in model.lower():
+        # Use OpenClaw with memory-sync agent (Gemini)
+        chunk_summarizer = get_summarizer('openclaw', is_chunk=True)
+        chunk_model = 'gemini'
+        print(f"  Using OpenClaw with memory-sync agent (Gemini) for chunk summarization...")
+    elif os.environ.get('ANTHROPIC_API_KEY'):
+        # Anthropic API available - use Haiku for speed
+        try:
+            chunk_summarizer = get_summarizer('anthropic', is_chunk=True)
+            chunk_model = DEFAULT_CHUNK_MODEL  # Haiku for speed
+            print(f"  Using Anthropic API with {chunk_model} for fast chunk summarization...")
+        except Exception as e:
+            print(f"  Anthropic API failed ({e}), falling back to OpenClaw backend...")
+            chunk_summarizer = get_summarizer(backend, is_chunk=True)
+            chunk_model = None
+    else:
+        # No Anthropic API key - use OpenClaw backend
+        print(f"  Using OpenClaw backend for chunk summarization...")
         chunk_summarizer = get_summarizer(backend, is_chunk=True)
         chunk_model = None
     
@@ -2554,7 +2588,7 @@ def generate_summarized_memory(
     
     try:
         if total_chars > MAX_CONTEXT_CHARS:
-            print(f"  Large day detected ({total_chars:,} chars) - using chunked summarization")
+            print(f"  Large day detected ({total_chars:,} chars) - delegating to summarize_chunked...")
             summary = summarize_chunked(
                 log_date, messages, transitions,
                 existing_content=existing_content if preserve else None,
