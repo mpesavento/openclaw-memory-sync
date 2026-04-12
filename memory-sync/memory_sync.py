@@ -61,7 +61,7 @@ AUTO_GENERATED_FOOTER = '*Review and edit this draft to capture what\'s actually
 MIN_VALID_SIZE = 100  # bytes - minimum size for a memory file to be considered non-empty
 
 # Default LLM model for summarization
-DEFAULT_SUMMARIZE_MODEL = "gemini"  # Uses memory-sync agent with google/gemini-2.5-pro
+DEFAULT_SUMMARIZE_MODEL = "kimi"  # Uses moonshot/kimi-k2.5 (cheaper than Gemini)
 # Faster/cheaper model for individual chunk summaries (chunks get synthesized later)
 DEFAULT_CHUNK_MODEL = "claude-3-haiku-20240307"
 # Message threshold below which we use simple summarization (no chunking)
