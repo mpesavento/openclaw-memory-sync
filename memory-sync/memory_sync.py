@@ -3086,6 +3086,14 @@ def backfill(target_date, backfill_all, today, since_date, until_date, increment
 
             if not result['created'] and not result['errors']:
                 click.echo("No missing files to backfill.")
+    
+    # Mine to MemPalace after successful backfill (if not dry run and files were created)
+    if not dry_run and (created if dates_to_process else result.get('created')):
+        click.echo("\nMining sessions to MemPalace...")
+        if mine_to_mempalace(sessions_path, wing="wren"):
+            click.echo("MemPalace mining completed successfully")
+        else:
+            click.echo("MemPalace mining skipped or failed (non-fatal)", err=True)
 
 
 @main.command()
@@ -3337,6 +3345,42 @@ def stats(sessions_dir, memory_dir):
         click.echo(f"  Directory not found: {memory_path}")
 
     click.echo("")
+
+
+def mine_to_mempalace(sessions_dir: Optional[Path] = None, wing: str = "wren") -> bool:
+    """Mine sessions to MemPalace after backfill.
+    
+    Args:
+        sessions_dir: Path to sessions directory (default: ~/.openclaw/agents/main/sessions)
+        wing: Wing name (default: "wren")
+        
+    Returns:
+        True if mining succeeded, False otherwise
+    """
+    import subprocess
+    
+    sessions_path = sessions_dir if sessions_dir else get_default_sessions_dir()
+    
+    try:
+        result = subprocess.run(
+            ["mempalace", "mine", str(sessions_path), "--wing", wing, "--mode", "convos"],
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
+        )
+        if result.returncode != 0:
+            click.echo(f"MemPalace mining failed: {result.stderr}", err=True)
+            return False
+        return True
+    except FileNotFoundError:
+        click.echo("MemPalace not installed - skipping mining", err=True)
+        return False
+    except subprocess.TimeoutExpired:
+        click.echo("MemPalace mining timed out", err=True)
+        return False
+    except Exception as e:
+        click.echo(f"MemPalace mining error: {e}", err=True)
+        return False
 
 
 if __name__ == "__main__":
