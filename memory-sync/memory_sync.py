@@ -2145,62 +2145,20 @@ def summarize_chunked(
     user_section, assistant_section = prepare_conversation_text_full(messages)
     total_chars = len(user_section) + len(assistant_section)
     
-    # Gemini has 1M+ token context, BUT shell ARG_MAX is ~2MB
-    # So we're limited by command line length, not model context
+    # Gemini has 1M+ token context, BUT the OpenClaw gateway processing
+    # overhead makes direct submission too slow for heavy days (>100K chars).
+    # ALWAYS use chunking for heavy days, even with Gemini - it's faster and more reliable.
     use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
-    SHELL_ARG_MAX = 1_500_000  # Safe limit under 2MB ARG_MAX
+    HEAVY_DAY_THRESHOLD = 100_000  # Always chunk days over 100K chars
     
-    if use_gemini:
-        if total_chars <= SHELL_ARG_MAX:
-            print(f"  Using Gemini ({total_chars:,} chars) - skipping chunking...", file=sys.stderr)
-            summarizer = get_summarizer(backend)
-            return summarizer(log_date, messages, transitions, existing_content, model)
-        else:
-            # Day too large for single CLI call - need aggressive truncation
-            print(f"  Day too large for CLI ({total_chars:,} chars > {SHELL_ARG_MAX:,})", file=sys.stderr)
-            print(f"  Truncating all large messages...", file=sys.stderr)
-            
-            # Truncate ALL large messages (not just tool results)
-            MAX_MSG_CHARS = 2000  # Keep first 2K of each message
-            truncated_messages = []
-            truncated_count = 0
-            for msg in messages:
-                if len(msg.text_content) > MAX_MSG_CHARS:
-                    truncated_msg = Message(
-                        id=msg.id,
-                        timestamp=msg.timestamp,
-                        role=msg.role,
-                        text_content=msg.text_content[:MAX_MSG_CHARS] + f"\n[...truncated {len(msg.text_content) - MAX_MSG_CHARS:,} chars...]",
-                        model=msg.model,
-                        provider=msg.provider,
-                        has_tool_calls=msg.has_tool_calls,
-                        has_thinking=msg.has_thinking
-                    )
-                    truncated_messages.append(truncated_msg)
-                    truncated_count += 1
-                else:
-                    truncated_messages.append(msg)
-            
-            # Recalculate size
-            user_section, assistant_section = prepare_conversation_text_full(truncated_messages)
-            new_total = len(user_section) + len(assistant_section)
-            print(f"  Truncated {truncated_count} messages: {new_total:,} chars", file=sys.stderr)
-            
-            if new_total <= SHELL_ARG_MAX:
-                print(f"  Using Gemini (truncated) - skipping chunking...", file=sys.stderr)
-                summarizer = get_summarizer(backend)
-                return summarizer(log_date, truncated_messages, transitions, existing_content, model)
-            else:
-                print(f"  Still too large - using chunked summarization with default model", file=sys.stderr)
-                # Fall through to chunked processing (will use default model, not Gemini)
-    
-    if total_chars <= max_context_chars:
-        # Fits in context - use normal summarization
+    if total_chars <= max_context_chars and total_chars <= HEAVY_DAY_THRESHOLD:
+        # Light day - use normal summarization
         summarizer = get_summarizer(backend)
         return summarizer(log_date, messages, transitions, existing_content, model)
     
-    # Need chunking - use SIZE-based chunking to guarantee each chunk fits
-    print(f"  Large day ({len(messages)} messages, {total_chars:,} chars) - using chunked summarization...")
+    # Heavy day - ALWAYS use chunked summarization for reliability
+    # This applies even with Gemini to avoid gateway timeouts
+    print(f"  Heavy day ({len(messages)} messages, {total_chars:,} chars) - using chunked summarization...")
     
     # Determine if we should use Gemini for synthesis
     use_gemini = model and model.lower() in ('gemini', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash')
@@ -2609,6 +2567,30 @@ def generate_summarized_memory(
         if backend == 'openclaw':
             print(f"Warning: OpenClaw summarization failed ({e})", file=sys.stderr)
             print("Try using --summarize-backend=anthropic (recommended) or --summarize-backend=openai", file=sys.stderr)
+        
+        # Write failure marker to the file so cron job can detect it
+        failure_content = f"""# {log_date} ({log_date.strftime('%A')})
+
+*Auto-generated from {len(messages)} session messages*
+
+<!-- SUMMARIZATION_FAILED -->
+**ERROR:** LLM summarization failed: {str(e)[:200]}
+
+*This file was created but summary generation failed. The template below is placeholder content.*
+
+---
+
+## Topics Covered
+## Key Exchanges
+## Decisions/Actions
+## Model Transitions
+
+---
+*Review and edit this draft to capture what's actually important.*
+"""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(failure_content)
+        print(f"  Wrote failure marker to: {output_path}", file=sys.stderr)
         raise
 
     lines = []
