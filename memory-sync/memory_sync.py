@@ -68,7 +68,11 @@ DEFAULT_CHUNK_MODEL = "claude-3-haiku-20240307"
 SIMPLE_SUMMARY_THRESHOLD = 200  # If <= 200 messages, don't bother chunking
 
 # Rate limiting for batch LLM calls (seconds between requests)
-LLM_BATCH_DELAY_SECONDS = 1.0
+LLM_BATCH_DELAY_SECONDS = 2.0
+
+# Chunk processing settings (tuned for Pi 5 with limited RAM)
+MAX_CHUNK_WORKERS = 2  # Parallel workers for chunk summarization (was 3, reduced to prevent OOM)
+MAX_CHUNK_CHARS = 200000  # Increased from 120K to reduce chunk count on heavy days
 
 
 # =============================================================================
@@ -2216,11 +2220,10 @@ def summarize_chunked(
             print(f"  [Thread] Chunk {i+1} failed: {e}")
             return (i, f"### Time Block {i+1}: {chunk_start}-{chunk_end}\n\n[Summarization failed: {e}]")
     
-    # Use 3 parallel workers (balance between speed and API rate limits)
-    MAX_WORKERS = 3
-    print(f"  Parallelizing with {MAX_WORKERS} workers...")
+    # Use configured worker count (2 for Pi 5 to balance speed vs memory/OOM)
+    print(f"  Parallelizing with {MAX_CHUNK_WORKERS} workers...")
     
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_CHUNK_WORKERS) as executor:
         futures = {executor.submit(summarize_chunk, (i, chunk)): i for i, chunk in enumerate(chunks)}
         results = {}
         for future in as_completed(futures):
