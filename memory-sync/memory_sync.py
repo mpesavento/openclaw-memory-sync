@@ -51,7 +51,7 @@ LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 # Thresholds for gap detection (FIXED: sparse threshold lowered to 5)
 MIN_FILE_SIZE_BYTES = 1024
-MIN_BYTES_PER_MESSAGE = 3  # Heuristic floor; high tool-result volume can depress bytes/msg even with good summaries
+MIN_BYTES_PER_MESSAGE = 2  # Heuristic floor; high tool-result volume can depress bytes/msg even with good summaries
 
 # Markers for identifying auto-generated content
 AUTO_GENERATED_HEADER_PATTERN = r'\*Auto-generated from \d+ session messages\*'
