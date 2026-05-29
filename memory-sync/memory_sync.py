@@ -63,7 +63,7 @@ MIN_VALID_SIZE = 100  # bytes - minimum size for a memory file to be considered 
 # Default LLM model for summarization
 DEFAULT_SUMMARIZE_MODEL = "kimi"  # Uses moonshot/kimi-k2.5 (cheaper than Gemini)
 # Faster/cheaper model for individual chunk summaries (chunks get synthesized later)
-DEFAULT_CHUNK_MODEL = "claude-3-haiku-20240307"
+DEFAULT_CHUNK_MODEL = "kimi"  # Changed from deprecated Haiku to Kimi via OpenClaw
 # Message threshold below which we use simple summarization (no chunking)
 SIMPLE_SUMMARY_THRESHOLD = 200  # If <= 200 messages, don't bother chunking
 
@@ -2179,27 +2179,11 @@ def summarize_chunked(
     # If --model gemini was passed, use the memory-sync agent directly.
     # Otherwise fall back to the specified backend.
     
-    chunk_model = None
-    if use_gemini or model and 'gemini' in model.lower():
-        # Use OpenClaw with memory-sync agent (Gemini)
-        chunk_summarizer = get_summarizer('openclaw', is_chunk=True)
-        chunk_model = 'gemini'
-        print(f"  Using OpenClaw with memory-sync agent (Gemini) for chunk summarization...")
-    elif os.environ.get('ANTHROPIC_API_KEY'):
-        # Anthropic API available - use Haiku for speed
-        try:
-            chunk_summarizer = get_summarizer('anthropic', is_chunk=True)
-            chunk_model = DEFAULT_CHUNK_MODEL  # Haiku for speed
-            print(f"  Using Anthropic API with {chunk_model} for fast chunk summarization...")
-        except Exception as e:
-            print(f"  Anthropic API failed ({e}), falling back to OpenClaw backend...")
-            chunk_summarizer = get_summarizer(backend, is_chunk=True)
-            chunk_model = None
-    else:
-        # No Anthropic API key - use OpenClaw backend
-        print(f"  Using OpenClaw backend for chunk summarization...")
-        chunk_summarizer = get_summarizer(backend, is_chunk=True)
-        chunk_model = None
+    # Always use OpenClaw backend with Kimi for chunks (Haiku is deprecated)
+    # Kimi is reliable on Pi 5 and doesn't require Anthropic API key
+    chunk_summarizer = get_summarizer('openclaw', is_chunk=True)
+    chunk_model = DEFAULT_CHUNK_MODEL  # Uses kimi via OpenClaw
+    print(f"  Using OpenClaw with Kimi for chunk summarization (Haiku deprecated)...")
     
     # Parallel chunk summarization using ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -2213,7 +2197,7 @@ def summarize_chunked(
         chunk_end = chunk[-1].timestamp.strftime('%H:%M')
         print(f"  [Thread {threading.current_thread().name}] Summarizing chunk {i+1}/{len(chunks)} ({chunk_start}-{chunk_end}, {len(chunk)} messages)...")
         try:
-            # Use Haiku for chunks (fast), synthesis will use Sonnet via OpenClaw
+            # Use Kimi for chunks (reliable on Pi 5), synthesis uses main model
             summary = chunk_summarizer(log_date, chunk, [], None, chunk_model)
             return (i, f"### Time Block {i+1}: {chunk_start}-{chunk_end}\n\n{summary}")
         except Exception as e:

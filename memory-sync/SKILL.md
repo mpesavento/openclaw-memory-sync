@@ -191,3 +191,30 @@ The LLM prompt prioritizes user conversations. If still missing:
 ### Very Large Days Timing Out
 
 Use Gemini: `--model gemini` handles days that would require excessive chunking with Sonnet.
+
+### Gemini SIGKILL / Resource Failures on Raspberry Pi
+
+If Gemini consistently fails with SIGKILL or timeout errors (common on Pi 5 with limited RAM):
+
+**Fallback to Kimi:**
+```bash
+python memory_sync.py backfill --date YYYY-MM-DD --summarize --model kimi --preserve
+```
+
+**Why this works:**
+- Kimi uses less memory than Gemini's 1M context window
+- Chunking still happens automatically for heavy days
+- Slightly slower but more reliable on resource-constrained hardware
+
+**To make Kimi the default** (if Gemini consistently fails):
+```bash
+# Edit memory_sync.py line 64:
+DEFAULT_SUMMARIZE_MODEL = "kimi"  # Instead of "gemini"
+```
+
+Or create a dedicated Kimi agent:
+```bash
+openclaw agents add memory-sync-kimi --model moonshot/kimi-k2.5 --workspace ~/.openclaw/workspace --non-interactive
+```
+
+**Note:** Gemini is still preferred for very heavy days (>500 messages) when hardware permits—it's faster due to no chunking needed.
