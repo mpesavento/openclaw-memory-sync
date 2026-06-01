@@ -2245,10 +2245,14 @@ def summarize_chunked(
             "--timeout", str(SYNTHESIS_TIMEOUT)
         ]
         
-        # Use memory-sync agent (Gemini) if requested
+        # Use memory-sync agent (Gemini) if requested, otherwise respect model flag
         if use_gemini:
             cmd.extend(["--agent", "memory-sync"])
             print(f"    Using Gemini for synthesis...", file=sys.stderr)
+        elif model and model.lower() == 'kimi':
+            # Use Kimi explicitly to avoid Gemini SIGKILL on Pi 5
+            cmd.extend(["--model", "kimi"])
+            print(f"    Using Kimi for synthesis...", file=sys.stderr)
         
         try:
             result = subprocess.run(
