@@ -1373,6 +1373,19 @@ def render_daily_template(context: dict) -> str:
     return '\n'.join(lines)
 
 
+LLM_SUMMARY_MARKERS = ('## Context Summary', '## Goal\n', '## Progress', '## Constraints & Preferences')
+
+
+def has_llm_summary_content(content: str) -> bool:
+    """Detect whether content was produced by the LLM-summarize path.
+
+    The bare template emits "## Topics Covered" + "## Key Exchanges" + "## Decisions/Actions".
+    The summarize path emits structured sections like Context Summary / Goal / Progress.
+    Presence of any summary marker means we must not overwrite with a bare template.
+    """
+    return any(marker in content for marker in LLM_SUMMARY_MARKERS)
+
+
 def generate_daily_memory(
     log_date: date,
     sessions_dir: Path,
@@ -1385,8 +1398,14 @@ def generate_daily_memory(
     if output_path.exists():
         if not force and not preserve:
             raise FileExistsError(f"File already exists: {output_path}. Use --force to overwrite.")
-        if preserve:
-            existing_content = output_path.read_text()
+        existing_content = output_path.read_text()
+        if has_llm_summary_content(existing_content):
+            raise FileExistsError(
+                f"Refusing to overwrite LLM-summarized file with bare template: {output_path}. "
+                f"Re-run with --summarize to regenerate, or delete the file first to force a stub."
+            )
+        if not preserve:
+            existing_content = ""
 
     messages: list[Message] = []
     transitions: list[ModelTransition] = []
