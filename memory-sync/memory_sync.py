@@ -420,13 +420,18 @@ def safe_sanitize(content: str) -> str:
 
 def parse_jsonl(path: Path) -> Iterator[dict]:
     """Stream parse a JSONL file, yielding records."""
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                record = json.loads(line)
+                # Corrupted/truncated sessions can contain non-object lines (e.g.
+                # bare ints after a decode error). Skip anything that isn't a
+                # JSON object so all downstream .get() callers stay safe.
+                if isinstance(record, dict):
+                    yield record
             except json.JSONDecodeError as e:
                 print(f"Warning: Skipping malformed JSON at {path}:{line_num} ({type(e).__name__})", file=sys.stderr)
 
@@ -434,7 +439,7 @@ def parse_jsonl(path: Path) -> Iterator[dict]:
 def get_session_metadata(path: Path) -> Optional[dict]:
     """Extract session record (first line with type: "session")."""
     for record in parse_jsonl(path):
-        if record.get('type') == 'session':
+        if isinstance(record, dict) and record.get('type') == 'session':
             return record
     return None
 
@@ -497,7 +502,7 @@ def _has_thinking(content: list) -> bool:
 def get_messages(path: Path, date_filter: Optional[date] = None) -> Iterator[Message]:
     """Extract message records from a session log."""
     for record in parse_jsonl(path):
-        if record.get('type') != 'message':
+        if not isinstance(record, dict) or record.get('type') != 'message':
             continue
 
         msg = record.get('message', {})
